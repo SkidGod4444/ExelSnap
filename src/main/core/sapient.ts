@@ -1,6 +1,5 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync, createWriteStream } from 'node:fs'
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
@@ -14,9 +13,16 @@ const exec = promisify(execFile)
 export const DEFAULT_BASE_URL = 'http://localhost:11435/v1'
 export const FALLBACK_MODEL = 'openhorizon/qwen2.5-1.5b-q4'
 
+/** SAPIENT's own installer: picks the build for this Mac, verifies its checksum, installs without a password when given a user folder. */
+const INSTALL_SCRIPT = 'https://github.com/openhorizon-labs/sapient/releases/latest/download/install.sh'
+/** Where the app installs SAPIENT when the computer has none: the same place its installer uses for a user install, so the terminal finds it too. */
+const INSTALL_DIR = process.env.EXELSNAP_SAPIENT_DIR || join(homedir(), '.local', 'bin')
+
 /** Apps launched from Finder get a minimal PATH, so also look in the usual install locations. */
 export function findSapientBinary(override?: string): string | null {
   if (override) return existsSync(override) ? override : null
+  // EXELSNAP_SAPIENT_DIR pins the app to one folder (used by tests, or to keep it apart from a system install).
+  if (process.env.EXELSNAP_SAPIENT_DIR) return existsSync(join(INSTALL_DIR, 'sapient')) ? join(INSTALL_DIR, 'sapient') : null
   const exe = process.platform === 'win32' ? 'sapient.exe' : 'sapient'
   const dirs = [
     ...(process.env.PATH ?? '').split(delimiter),
@@ -98,8 +104,10 @@ export class SapientManager {
   private cpuFallback = false // the chosen backend isn't in this SAPIENT build
   private pulling: string | undefined
   private stopping: Promise<void> = Promise.resolve()
-  private gpuEngine: GpuEngine | undefined // which GPU flag this binary accepted
+  private gpuEngine: GpuEngine | undefined // wgpu (hybrid/GPU builds) or Metal (the Apple-only build), once known
   private engineUpdating = false
+  private engineInstalling = false
+  private preparing: Promise<void> | null = null
   private engineNote: string | undefined
 
   constructor(
@@ -110,62 +118,78 @@ export class SapientManager {
       backend: () => Backend
       answerSeconds?: (model: string, backend: Backend) => number | undefined
       logPath?: string
-      /** The SAPIENT binary shipped with the app, and the writable folder its working copy lives in. */
-      engine?: { seed: string; dir: string }
     }
   ) {}
 
-  private get enginePath(): string | null {
-    return this.opts.engine ? join(this.opts.engine.dir, 'sapient') : null
-  }
-
-  /** The binary to run: a path set in Settings, else the app's own copy, else one installed on the system. */
-  private binary(): { path: string | null; source: 'bundled' | 'custom' | 'system' | 'none' } {
+  /** The binary to run: a path set in Settings, else the SAPIENT installed on this computer. */
+  private binary(): { path: string | null; source: 'custom' | 'system' | 'none' } {
     const override = this.opts.binaryOverride()
     if (override) return { path: existsSync(override) ? override : null, source: 'custom' }
-    if (this.enginePath && existsSync(this.enginePath)) return { path: this.enginePath, source: 'bundled' }
     const system = findSapientBinary()
     return { path: system, source: system ? 'system' : 'none' }
   }
 
   /**
-   * Called when the app opens. Installs the bundled SAPIENT into a writable folder (the copy inside
-   * a signed app can't be changed) and lets it update itself to the latest release, so users are
-   * never stuck on the engine version the app was built with. Needs the network only for the
-   * update; offline it simply keeps the version it has.
+   * Called every time the app opens (and from "Set up" in the UI). If the computer has no SAPIENT,
+   * install it with SAPIENT's own install script; otherwise let it update itself to the latest
+   * release. Both need the network; offline the app keeps whatever is installed. A binary set in
+   * Settings is left alone.
    */
-  async prepareEngine(): Promise<void> {
-    const engine = this.opts.engine
-    const path = this.enginePath
-    if (!engine || !path || this.opts.binaryOverride()) return
+  prepareEngine(): Promise<void> {
+    this.preparing ??= this.prepareNow().finally(() => (this.preparing = null))
+    return this.preparing
+  }
+
+  /** A question sent while SAPIENT is still being installed waits for the install instead of failing. */
+  async ensureInstalled(): Promise<void> {
+    if (!this.binary().path && !this.opts.binaryOverride()) await this.prepareEngine()
+  }
+
+  private async prepareNow(): Promise<void> {
+    if (this.opts.binaryOverride()) return
+    const installed = this.binary().path
+    this.engineNote = undefined
+    if (!installed) {
+      this.engineInstalling = true
+      try {
+        log.info('sapient', 'not found on this computer; installing', { dir: INSTALL_DIR })
+        // SAPIENT_INSTALL_DIR keeps the installer from asking for an administrator password;
+        // the hybrid build has all three modes the app offers (CPU, GPU, hybrid).
+        const { stdout, stderr } = await exec('/bin/sh', ['-c', `set -o pipefail 2>/dev/null; /usr/bin/curl -fsSL ${INSTALL_SCRIPT} | /bin/sh`], {
+          timeout: 10 * 60_000,
+          maxBuffer: 16 << 20,
+          env: { ...process.env, SAPIENT_INSTALL_DIR: INSTALL_DIR, SAPIENT_VARIANT: 'hybrid', NO_COLOR: '1' }
+        })
+        const path = this.binary().path
+        if (!path) throw new Error(lastLine(`${stdout}\n${stderr}`) || 'the installer finished but SAPIENT is still missing')
+        log.info('sapient', 'installed', { path, version: await sapientVersion(path) })
+      } catch (err) {
+        this.engineNote = `SAPIENT could not be installed: ${(err instanceof Error ? lastLine(err.message) : String(err)).slice(0, 200)}. Check the internet connection and try again.`
+        log.error('sapient', 'install failed', err)
+      } finally {
+        this.engineInstalling = false
+        this.versionCache = undefined
+        this.invalidateModels()
+      }
+      return
+    }
     this.engineUpdating = true
     try {
-      if (existsSync(engine.seed)) {
-        const [have, shipped] = await Promise.all([existsSync(path) ? sapientVersion(path) : undefined, sapientVersion(engine.seed)])
-        if (!have || (shipped && newer(shipped, have))) {
-          await mkdir(engine.dir, { recursive: true })
-          // Written as a new file rather than copied, so no quarantine attribute comes along from the app bundle.
-          await writeFile(path, await readFile(engine.seed))
-          await chmod(path, 0o755)
-          log.info('sapient', 'installed bundled engine', { version: shipped, replaced: have })
-        }
-      }
-      if (!existsSync(path)) return
-      const before = await sapientVersion(path)
-      try {
-        // --hybrid: the build that has all three modes (CPU, GPU, hybrid).
-        const { stdout, stderr } = await exec(path, ['update', '--hybrid'], { timeout: 180_000 })
-        const after = await sapientVersion(path)
-        this.engineNote = after && before && after !== before ? `Updated SAPIENT ${before} → ${after}.` : undefined
-        log.info('sapient', 'update check', { before, after, output: lastLine(`${stdout}\n${stderr}`) })
-      } catch (err) {
-        // Offline, rate-limited, or the download failed: keep what is installed.
-        this.engineNote = `Could not check for a SAPIENT update (using ${before ?? 'the installed version'}).`
-        log.warn('sapient', 'update check failed', { before, error: err })
-      }
-      this.versionCache = undefined
+      const before = await sapientVersion(installed)
+      const { stdout, stderr } = await exec(installed, ['update'], { timeout: 180_000 })
+      const output = lastLine(`${stdout}\n${stderr}`)
+      const after = await sapientVersion(installed)
+      // "sapient 0.6.5 (Metal (MLX, GPU)) is already up to date." — also tells which GPU engine this build has.
+      if (/\(\s*Metal/i.test(output)) this.gpuEngine = 'metal'
+      else if (/\(\s*(Hybrid|GPU)/i.test(output)) this.gpuEngine = 'wgpu'
+      if (after && before && after !== before) this.engineNote = `Updated SAPIENT ${before} → ${after}.`
+      log.info('sapient', 'update check', { before, after, output })
+    } catch (err) {
+      // Offline, rate-limited, or the download failed: keep what is installed.
+      log.warn('sapient', 'update check failed', err)
     } finally {
       this.engineUpdating = false
+      this.versionCache = undefined
     }
   }
 
@@ -194,8 +218,8 @@ export class SapientManager {
     // what the user started it with (Settings says so).
     const backend: Backend = this.cpuFallback ? 'cpu' : this.opts.backend()
     const device = deviceInfo()
-    // The bundled engine is the wgpu build; another binary is assumed to be the Metal build until it shows otherwise.
-    const advice = adviseModels(models, backend, device.memoryGb, this.gpuEngine ?? (source === 'bundled' ? 'wgpu' : 'metal'))
+    // Until the build is known, budget for wgpu: it has the larger loading spike.
+    const advice = adviseModels(models, backend, device.memoryGb, this.gpuEngine ?? 'wgpu')
     for (const m of advice) m.typicalSeconds = this.opts.answerSeconds?.(m.id, backend)
     return {
       state: online ? 'online' : this.starting ? 'starting' : this.lastError ? 'error' : 'offline',
@@ -211,7 +235,7 @@ export class SapientManager {
       backendNote: this.backendNote,
       models: advice,
       pulling: this.pulling,
-      engine: { source, updating: this.engineUpdating, note: this.engineNote },
+      engine: { source, installing: this.engineInstalling, updating: this.engineUpdating, note: this.engineNote },
       error: online ? undefined : this.lastError
     }
   }
@@ -257,7 +281,7 @@ export class SapientManager {
   private async startNow(): Promise<void> {
     const wanted = this.cpuFallback ? 'cpu' : this.opts.backend()
     // "GPU" is wgpu in the hybrid/GPU builds and Metal (MLX) in the Apple-only Metal build.
-    const flags = wanted !== 'gpu' ? [wanted] : this.binary().source === 'bundled' ? ['wgpu'] : process.platform === 'darwin' ? ['metal', 'wgpu'] : ['wgpu']
+    const flags = wanted !== 'gpu' ? [wanted] : process.platform !== 'darwin' ? ['wgpu'] : this.gpuEngine === 'metal' ? ['metal', 'wgpu'] : ['wgpu', 'metal']
     let failure: unknown
     for (const flag of flags) {
       try {
@@ -282,7 +306,7 @@ export class SapientManager {
     const baseUrl = this.opts.baseUrl()
     if (!isLocal(baseUrl)) throw new Error('SAPIENT can only be started automatically for a localhost URL.')
     const binary = this.binary().path
-    if (!binary) throw new Error('SAPIENT is not installed. Install it with: npm i -g openhorizon (then run `openhorizon update`).')
+    if (!binary) throw new Error('SAPIENT is not installed yet. Open Settings and choose Set up.')
     if (this.managed) return
     this.starting = true
     this.lastError = undefined

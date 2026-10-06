@@ -50,12 +50,7 @@ const sapient = new SapientManager({
   preferredModel: () => store.settings.model,
   backend: () => store.settings.backend,
   answerSeconds: (model, backend) => store.answerSeconds(model, backend),
-  logPath: sapientLog,
-  // SAPIENT ships inside the app (see scripts/fetch-sapient.mjs) and keeps itself current from a writable copy.
-  engine: {
-    seed: app.isPackaged ? join(process.resourcesPath, 'sapient', 'sapient') : join(app.getAppPath(), 'vendor', 'sapient', 'sapient'),
-    dir: join(app.getPath('userData'), 'engine')
-  }
+  logPath: sapientLog
 })
 
 function emit(e: AppEvent) {
@@ -159,6 +154,15 @@ const handlers: InvokeApi = {
     sapient.stop()
     lastStatus = ''
     return publishStatus()
+  },
+  setupSapient: async () => {
+    const done = sapient.prepareEngine()
+    lastStatus = ''
+    void publishStatus()
+    await done.catch((err) => log.error('sapient', 'engine preparation failed', err))
+    lastStatus = ''
+    const status = await publishStatus()
+    return status.state === 'offline' && store.settings.autoStartSapient && status.binary ? handlers.startSapient() : status
   },
   pullModel: async (id) => {
     const done = sapient.pull(id)
@@ -333,12 +337,13 @@ app.whenReady().then(async () => {
   }
   createWindow()
 
-  // Bring the bundled SAPIENT up to date before starting it. The window is already usable; if the
-  // check is slow (bad network) the app carries on with the version it has and the update finishes
-  // in the background for the next start.
+  // Install SAPIENT if this computer has none, otherwise bring it up to date, before starting it.
+  // The window is already usable; if this is slow (bad network) an existing install is started as
+  // it is and the update finishes in the background for the next launch.
   const prepared = sapient.prepareEngine().catch((err) => log.error('sapient', 'engine preparation failed', err))
-  void publishStatus()
-  await Promise.race([prepared, new Promise((r) => setTimeout(r, 20_000))])
+  lastStatus = ''
+  const early = await publishStatus()
+  await (early.binary ? Promise.race([prepared, new Promise((r) => setTimeout(r, 20_000))]) : prepared)
   lastStatus = ''
   const status = await publishStatus()
   if (status.state === 'offline' && store.settings.autoStartSapient && status.binary) {

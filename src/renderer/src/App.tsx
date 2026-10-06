@@ -304,6 +304,24 @@ export default function App() {
                 </Suggestion>
               )}
             </div>
+            {status && !status.binary && (
+              <div className="setup-note">
+                {status.engine.installing ? (
+                  <div>
+                    <strong>Setting up.</strong> Downloading SAPIENT, the engine that runs the model on this computer (about 8 MB)…
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <strong>SAPIENT isn't installed yet.</strong> {status.engine.note ?? 'ExelSnap downloads it the first time it opens.'}
+                    </div>
+                    <button className="btn primary" onClick={() => void api.setupSapient().then(setStatus)}>
+                      Install SAPIENT
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
             {firstModel && (
               <div className="setup-note">
                 <div>

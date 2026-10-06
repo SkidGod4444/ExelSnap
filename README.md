@@ -50,12 +50,17 @@ npm run dev            # app with hot reload
 npm run sample         # (re)generate samples/sales_demo.xlsx to try it with
 ```
 
-SAPIENT comes with the app: `npm run dev` and the Mac build download the engine into `vendor/sapient/`
-(`scripts/fetch-sapient.mjs`, hybrid build, checksum verified). On first start the app copies it to
-`<userData>/engine/` and, **every time it opens**, runs `sapient update` on that copy so the engine stays on the
-latest release. That check is the only time the app uses the network, and it sends none of your data; offline the
-installed version is kept. A path in Settings ▸ SAPIENT binary overrides the bundled engine (and is never
-auto-updated). The first time, download a model from the prompt on the start screen or the model menu, or:
+You don't install SAPIENT yourself. **Every time the app opens** it looks for `sapient` (PATH, `~/.local/bin`,
+`/opt/homebrew/bin`, `/usr/local/bin`):
+
+- not found → it runs SAPIENT's own installer (`install.sh` from the latest release, hybrid build, checksum
+  verified by the script) into `~/.local/bin`, no administrator password needed;
+- found → it runs `sapient update`, so the engine stays on the latest release.
+
+Both need the network and send none of your data; offline the app uses what is installed. A path in
+Settings ▸ SAPIENT binary is used as it is and never updated. `EXELSNAP_SAPIENT_DIR=/some/folder` makes the app use
+(and install into) that folder only. The first time, download a model from the prompt on the start screen or the
+model menu, or:
 
 ```bash
 sapient pull openhorizon/qwen2.5-7b-q4      # recommended (4.7 GB on disk, about 6 GB of memory)
@@ -141,7 +146,7 @@ Spreadsheets can be opened with ExelSnap from Finder ("Open With") or by droppin
   `--max-concurrency 1`. Worth reporting upstream.
 - 0.5B–3B models can call tools, but they loop, pick odd tools and misread numbers. Use 7B for real work.
 - **Memory.** Measured on an M4 with 16 GB while answering questions in the app (GB resident / peak):
-  CPU 1.5B 1.5 / 1.7, 3B 2.2 / 2.8, 7B 5.2 / 6.0; GPU (wgpu, the bundled build) 1.5B 1.4 / 9.5; hybrid 1.5B 2.7 / 10.0;
+  CPU 1.5B 1.5 / 1.7, 3B 2.2 / 2.8, 7B 5.2 / 6.0; GPU (wgpu, the hybrid build the app installs) 1.5B 1.4 / 9.5; hybrid 1.5B 2.7 / 10.0;
   GPU on the Metal build 1.5B 6.3, 3B 9.3 / 9.4. The GPU modes spike while weights are uploaded, and SAPIENT keeps the
   last 3 models loaded by default; loading 7B that way ran the Mac out of memory. ExelSnap therefore starts SAPIENT
   with `--max-models 1` and on the CPU unless you choose otherwise.

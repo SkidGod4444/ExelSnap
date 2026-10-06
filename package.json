@@ -8,17 +8,16 @@
   "license": "UNLICENSED",
   "private": true,
   "scripts": {
-    "dev": "node scripts/fetch-sapient.mjs && electron-vite dev",
+    "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "agent:cli": "electron-vite build && node out/main/cli.js",
-    "dist:mac": "node scripts/fetch-sapient.mjs && electron-vite build && electron-builder --mac",
+    "dist:mac": "electron-vite build && electron-builder --mac",
     "snap": "electron-vite build && electron scripts/snap.cjs snaps",
     "sample": "node scripts/make-sample.mjs",
     "test": "electron-vite build && node --test tests/",
-    "fetch:sapient": "node scripts/fetch-sapient.mjs",
-    "release:mac": "node scripts/fetch-sapient.mjs --force && electron-vite build && electron-builder --mac --config build/release.cjs"
+    "release:mac": "electron-vite build && electron-builder --mac --config build/release.cjs"
   },
   "devDependencies": {
     "@streamdown/cjk": "^1.0.4",
@@ -98,12 +97,6 @@
         "name": "Spreadsheet",
         "role": "Viewer",
         "rank": "Alternate"
-      }
-    ],
-    "extraResources": [
-      {
-        "from": "vendor/sapient",
-        "to": "sapient"
       }
     ]
   }

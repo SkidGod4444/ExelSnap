@@ -32,7 +32,7 @@ const BACKEND_HINT = {
 function engineLine(status: SapientStatus): string {
   const { source, updating, note } = status.engine
   if (updating) return 'Checking for a SAPIENT update…'
-  const origin = source === 'bundled' ? 'Comes with ExelSnap and updates itself each time the app opens.' : source === 'custom' ? `Custom binary: ${status.binary}` : `Installed on this computer: ${status.binary}`
+  const origin = source === 'custom' ? `Custom binary (not updated by ExelSnap): ${status.binary}` : `${status.binary} · checked for updates each time ExelSnap opens.`
   return note ? `${origin} ${note}` : origin
 }
 
@@ -76,7 +76,7 @@ export function SettingsDialog({
             {status?.version ? ` · v${status.version}` : ''}
           </div>
           <div className="hint">
-            {status?.error ? status.error : status?.binary ? engineLine(status) : 'Install with: npm i -g openhorizon, then run `openhorizon update`.'}
+            {status?.error ? status.error : status?.binary ? engineLine(status) : status?.engine.installing ? 'Downloading SAPIENT…' : (status?.engine.note ?? 'ExelSnap installs SAPIENT the first time it opens.')}
           </div>
         </div>
         {status?.state === 'online' ? (
@@ -86,9 +86,15 @@ export function SettingsDialog({
             </button>
           )
         ) : (
-          <button className="btn primary" onClick={onStart} disabled={!status?.binary || status.state === 'starting'}>
-            {status?.state === 'starting' ? <LoaderCircle size={14} className="spin" /> : null} Start
-          </button>
+          status?.binary ? (
+            <button className="btn primary" onClick={onStart} disabled={status.state === 'starting'}>
+              {status.state === 'starting' ? <LoaderCircle size={14} className="spin" /> : null} Start
+            </button>
+          ) : (
+            <button className="btn primary" onClick={() => void window.api.setupSapient()} disabled={!status || status.engine.installing}>
+              {status?.engine.installing ? <LoaderCircle size={14} className="spin" /> : null} Set up
+            </button>
+          )
         )}
       </div>
       <div className="setting">
@@ -147,7 +153,7 @@ export function SettingsDialog({
       <div className="setting">
         <div className="label">
           <div>SAPIENT binary</div>
-          <div className="hint">Leave empty to use the SAPIENT that comes with ExelSnap.</div>
+          <div className="hint">Leave empty to use the SAPIENT installed on this computer (ExelSnap installs it if missing).</div>
         </div>
         <input
           className="field"

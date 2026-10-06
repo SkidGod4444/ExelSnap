@@ -29,6 +29,8 @@ export interface InvokeApi {
   sapientStatus(): Promise<SapientStatus>
   startSapient(): Promise<SapientStatus>
   stopSapient(): Promise<SapientStatus>
+  /** Install SAPIENT if it is missing, otherwise check for an update (what the app does when it opens). */
+  setupSapient(): Promise<SapientStatus>
   /** Download a model with `sapient pull`. Resolves when the download ends. */
   pullModel(id: string): Promise<SapientStatus>
   /** Save a result as .xlsx or .csv. With `source` the query is re-run in full (results on screen stop at 500 rows). */
@@ -64,6 +66,7 @@ export const INVOKE_METHODS: (keyof InvokeApi)[] = [
   'sapientStatus',
   'startSapient',
   'stopSapient',
+  'setupSapient',
   'pullModel',
   'exportData',
   'revealFile',

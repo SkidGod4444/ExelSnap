@@ -225,6 +225,7 @@ export class ChatService {
     }
 
     try {
+      await this.sapient.ensureInstalled()
       let status = await this.sapient.status()
       if (status.state !== 'online' && this.store.settings.autoStartSapient && status.binary) {
         this.emit({ type: 'sapient', status: { ...status, state: 'starting' } })
