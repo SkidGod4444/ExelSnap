@@ -65,7 +65,7 @@ export class ChatService {
             Object.assign(a, { tables: loaded.tables, status: loaded.status, error: loaded.error, size: loaded.size || a.size })
           }
           if (c.attachments.length) {
-            this.store.save(c.id)
+            this.store.put(c)
             this.emit({ type: 'conversation', conversation: c })
           }
         }
@@ -161,7 +161,7 @@ export class ChatService {
     const t0 = now()
     const out: ModelMessage[] = []
     const update = (immediate = false) => {
-      this.store.save(c.id)
+      this.store.saveMessage(c.id, msg)
       this.pushMessage(c.id, msg, immediate)
     }
     let textIdx: number | null = null
@@ -251,7 +251,11 @@ export class ChatService {
       msg.durationMs = now() - t0
       c.updatedAt = now()
       this.runs.delete(c.id)
-      update(true)
+      // Unless the chat was deleted while the model was still answering.
+      if (this.store.get(c.id) === c) {
+        this.store.put(c)
+        update(true)
+      }
       this.emitList()
     }
   }
