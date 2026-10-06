@@ -1,6 +1,6 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync, createWriteStream } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, totalmem } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { SapientStatus } from '@shared/types'
@@ -39,11 +39,47 @@ export function openHorizonDefaultModel(): string | null {
   }
 }
 
-/** Parse `sapient list` (downloaded models). */
-export async function listDownloaded(binary: string): Promise<string[]> {
+/** Parameter count in billions from a model id ("qwen2.5-7b-q4" → 7); 0 when the id doesn't say (vision/speech models). */
+export function modelSize(id: string): number {
+  const m = /(?:^|[-_/])(\d+(?:\.\d+)?)b(?:$|[-_])/i.exec(id)
+  return m ? Number(m[1]) : 0
+}
+
+export interface DownloadedModel {
+  id: string
+  /** Size of the weights on disk in GB (0 when `sapient list` doesn't say). */
+  gb: number
+}
+
+/**
+ * Memory a model takes while it loads, as a multiple of its size on disk. Measured on SAPIENT 0.6.5
+ * (Apple M4): the CPU backend peaks at 1.3x (7B q4: 4.8 GB resident, 6.0 GB peak); the default Metal
+ * backend holds 2.2x and peaks at 3.4x (3B q4: 4.6 GB resident, up to 7.9 GB peak), which for a 7B
+ * model is more than a 16 GB Mac has.
+ */
+export const LOAD_FACTOR = { cpu: 1.3, default: 3.4 }
+
+/**
+ * The most capable downloaded chat model that loads into half of this computer's memory (the other
+ * half is for macOS and everything else that is open). Small models answer fast but skip steps and
+ * misread results, so "Auto" should not settle for one when a better one fits.
+ */
+export function bestModel(downloaded: DownloadedModel[], loadFactor: number, memoryGb = totalmem() / 2 ** 30): string | null {
+  const needs = (m: DownloadedModel) => (m.gb || modelSize(m.id) * 0.7) * loadFactor
+  const fits = downloaded.filter((m) => modelSize(m.id) > 0 && needs(m) <= memoryGb / 2)
+  return fits.sort((a, b) => modelSize(b.id) - modelSize(a.id))[0]?.id ?? null
+}
+
+/** Parse `sapient list` (downloaded models and their size on disk). */
+export async function listDownloaded(binary: string): Promise<DownloadedModel[]> {
   try {
     const { stdout } = await exec(binary, ['list'], { timeout: 10_000 })
-    return [...stdout.matchAll(/^\s*([\w.-]+\/[\w.:-]+)\s+/gm)].map((m) => m[1]).filter((m) => !m.startsWith('MODEL'))
+    return [...stdout.matchAll(/^\s*([\w.-]+\/[\w.:-]+)\s+(.*)$/gm)]
+      .filter((m) => !m[1].startsWith('MODEL'))
+      .map((m) => {
+        const size = /(\d+(?:\.\d+)?)\s*(GB|MB)\s*$/i.exec(m[2])
+        return { id: m[1], gb: size ? Number(size[1]) / (size[2].toUpperCase() === 'MB' ? 1024 : 1) : 0 }
+      })
   } catch {
     return []
   }
@@ -84,7 +120,7 @@ export class SapientManager {
   private starting = false
   private startPromise: Promise<void> | null = null
   private lastError: string | undefined
-  private downloadedCache: { at: number; models: string[] } | null = null
+  private downloadedCache: { at: number; models: DownloadedModel[] } | null = null
   private versionCache: string | undefined
 
   constructor(private opts: { baseUrl: () => string; binaryOverride: () => string; preferredModel: () => string; logPath?: string }) {}
@@ -100,7 +136,8 @@ export class SapientManager {
     if (binary && (!this.downloadedCache || Date.now() - this.downloadedCache.at > 30_000)) {
       this.downloadedCache = { at: Date.now(), models: await listDownloaded(binary) }
     }
-    const downloaded = this.downloadedCache?.models ?? []
+    const models = this.downloadedCache?.models ?? []
+    const downloaded = models.map((m) => m.id)
     let resident: string[] = []
     let online = false
     try {
@@ -117,13 +154,14 @@ export class SapientManager {
       managed: this.managed,
       resident,
       downloaded,
-      activeModel: this.resolveModel(resident, downloaded),
+      // A server we did not start runs with SAPIENT's defaults, which need far more memory per model.
+      activeModel: this.resolveModel(resident, models, online && !this.managed ? LOAD_FACTOR.default : LOAD_FACTOR.cpu),
       error: online ? undefined : this.lastError
     }
   }
 
-  resolveModel(resident: string[], downloaded: string[]): string {
-    return this.opts.preferredModel() || openHorizonDefaultModel() || resident[0] || downloaded[0] || FALLBACK_MODEL
+  resolveModel(resident: string[], downloaded: DownloadedModel[], loadFactor: number): string {
+    return this.opts.preferredModel() || bestModel(downloaded, loadFactor) || openHorizonDefaultModel() || resident[0] || downloaded[0]?.id || FALLBACK_MODEL
   }
 
   invalidateModels() {
@@ -145,8 +183,17 @@ export class SapientManager {
     this.starting = true
     this.lastError = undefined
     try {
-      // One generation at a time: overlapping requests corrupt SAPIENT 0.6.5's model state.
-      const args = ['serve', '--port', portOf(baseUrl), '--max-concurrency', '1']
+      const args = [
+        'serve',
+        '--port', portOf(baseUrl),
+        // One generation at a time: overlapping requests corrupt SAPIENT 0.6.5's model state.
+        '--max-concurrency', '1',
+        // SAPIENT keeps the last 3 models in memory by default. Switching model in the menu must free
+        // the old one, or a 16 GB Mac runs out of memory.
+        '--max-models', '1',
+        // Half the memory of the default Metal backend and no slower for these model sizes (see LOAD_FACTOR).
+        '--backend', 'cpu'
+      ]
       const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'] })
       this.child = child
       let tail = ''

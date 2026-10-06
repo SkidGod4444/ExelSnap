@@ -15,6 +15,12 @@ interface Props {
   onOpenSettings: () => void
 }
 
+/** Below 7B parameters (or not a chat model): fine for a quick look, unreliable for multi-step analysis. */
+const isSmall = (model: string) => {
+  const size = /(?:^|[-_/])(\d+(?:\.\d+)?)b(?:$|[-_])/i.exec(model)
+  return !size || Number(size[1]) < 7
+}
+
 export function Header(p: Props) {
   const [open, setOpen] = useState(false)
   const s = p.status
@@ -51,7 +57,7 @@ export function Header(p: Props) {
               <button className="menu-item" onClick={() => pick('')}>
                 <span className="grow">
                   Auto
-                  <span className="desc">Your OpenHorizon default, else whatever SAPIENT has loaded</span>
+                  <span className="desc">The most capable model on this computer{active ? ` — ${shortModel(active)}` : ''}</span>
                 </span>
                 {p.selectedModel === '' && <Check size={16} className="check" />}
               </button>
@@ -59,11 +65,16 @@ export function Header(p: Props) {
                 <button key={m} className="menu-item" onClick={() => pick(m)}>
                   <span className="grow">
                     {shortModel(m)}
-                    <span className="desc">On this computer</span>
+                    <span className="desc">{isSmall(m) ? 'Small and fast — can skip steps or misread results' : 'On this computer'}</span>
                   </span>
                   {p.selectedModel === m && <Check size={16} className="check" />}
                 </button>
               ))}
+              {models.length > 0 && models.every(isSmall) && (
+                <div className="menu-label" style={{ paddingBottom: 8, lineHeight: 1.5 }}>
+                  For reliable analysis get a 7B model: <code>sapient pull openhorizon/qwen2.5-7b-q4</code> (4.7 GB download, uses about 6 GB of memory)
+                </div>
+              )}
               {models.length === 0 && (
                 <div className="menu-label" style={{ paddingBottom: 8 }}>
                   No models found. Pull one with <code>sapient pull openhorizon/qwen2.5-7b-q4</code>

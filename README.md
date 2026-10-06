@@ -55,10 +55,11 @@ binary (PATH, `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) and starts 
 it isn't running. Pull a capable model first:
 
 ```bash
-sapient pull openhorizon/qwen2.5-7b-q4      # recommended (~4.2 GB, needs 16 GB RAM)
+sapient pull openhorizon/qwen2.5-7b-q4      # recommended (4.7 GB on disk, about 6 GB of memory)
 ```
 
-then pick it from the model menu (top left).
+**Auto** in the model menu (top left) uses the most capable downloaded model that loads into half of this
+computer's memory, so on a 16 GB Mac it picks the 7B model and on an 8 GB Mac the 3B one. You can still pick any model by hand.
 
 ### Headless agent (no UI)
 
@@ -118,4 +119,11 @@ Spreadsheets can be opened with ExelSnap from Finder ("Open With") or by droppin
   time, every reply became fragments (`"cludes the header row."`, a single `仑`) until the server
   was restarted. ExelSnap therefore sends one request at a time and starts SAPIENT with
   `--max-concurrency 1`. Worth reporting upstream.
-- 0.5B–1.5B models can call tools, but they loop, pick odd tools and misread numbers. Use 7B for real work.
+- 0.5B–3B models can call tools, but they loop, pick odd tools and misread numbers. Use 7B for real work.
+- **Memory.** On the default (Metal) backend a model holds about 2.2× its size on disk and peaks at 3.4× while
+  loading (3B q4: 4.6 GB resident, up to 7.9 GB peak), and the server keeps the last 3 models loaded. Two models on
+  a 16 GB Mac is enough to run it out of memory. ExelSnap therefore starts SAPIENT with `--backend cpu --max-models 1`:
+  1.0× resident, 1.3× peak (7B q4: 4.8–5.2 GB, 6.0 GB peak) and no slower at these sizes. A server you start
+  yourself uses SAPIENT's defaults; Auto then sizes the model for those.
+- When a spreadsheet is attached the first model turn must call a tool (`tool_choice: required`). Without that,
+  small models answer from the few example values in the schema instead of querying the file.

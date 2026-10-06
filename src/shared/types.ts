@@ -108,7 +108,7 @@ export interface ConversationSummary {
 
 export interface Settings {
   baseUrl: string
-  model: string // '' = auto (OpenHorizon default, else first served model)
+  model: string // '' = auto (the most capable downloaded model that fits in memory)
   temperature: number
   autoStartSapient: boolean
   sapientPath: string // '' = auto-detect

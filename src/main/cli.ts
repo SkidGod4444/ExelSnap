@@ -22,7 +22,9 @@ async function main() {
       schema: { type: 'boolean' },
       tables: { type: 'boolean' },
       sql: { type: 'string' },
-      export: { type: 'string' }
+      export: { type: 'string' },
+      // Ask several questions in one chat: -q "first" -q "follow-up"
+      question: { type: 'string', multiple: true, short: 'q' }
     }
   })
   const session = await WorkbookSession.create()
@@ -49,27 +51,32 @@ async function main() {
     console.log(JSON.stringify(await session.query(values.sql), null, 2))
     return
   }
-  const question = positionals.join(' ')
-  if (!question) throw new Error('Pass a question.')
+  const questions = values.question ?? (positionals.length ? [positionals.join(' ')] : [])
+  if (questions.length === 0) throw new Error('Pass a question.')
   const model = values.model ?? openHorizonDefaultModel() ?? FALLBACK_MODEL
   const provider = new ModelClient(values.url ?? DEFAULT_BASE_URL)
   console.error(`model: ${model}\n`)
-  const out: ModelMessage[] = []
-  const t0 = Date.now()
-  await runAgent({
-    provider,
-    model,
-    session,
-    history: [],
-    userText: question,
-    out,
-    onEvent: (e) => {
-      if (e.type === 'step-text' && e.text) console.log(`\n💬 ${e.text}`)
-      if (e.type === 'tool-start') console.log(`\n🔧 ${e.name} ${JSON.stringify(e.args)}`)
-      if (e.type === 'tool-end') console.log(`   → ${e.outcome.error ? 'ERROR ' + e.outcome.error : e.outcome.forModel.split('\n').slice(0, 8).join('\n     ')} (${e.durationMs} ms)`)
-    }
-  })
-  console.error(`\n(${((Date.now() - t0) / 1000).toFixed(1)}s, ${out.length} messages)`)
+  const history: ModelMessage[] = []
+  for (const question of questions) {
+    if (questions.length > 1) console.log(`\n❓ ${question}`)
+    const out: ModelMessage[] = []
+    const t0 = Date.now()
+    await runAgent({
+      provider,
+      model,
+      session,
+      history,
+      userText: question,
+      out,
+      onEvent: (e) => {
+        if (e.type === 'step-text' && e.text) console.log(`\n💬 ${e.text}`)
+        if (e.type === 'tool-start') console.log(`\n🔧 ${e.name} ${JSON.stringify(e.args)}`)
+        if (e.type === 'tool-end') console.log(`   → ${e.outcome.error ? 'ERROR ' + e.outcome.error : e.outcome.forModel.split('\n').slice(0, 8).join('\n     ')} (${e.durationMs} ms)`)
+      }
+    })
+    history.push(...out)
+    console.error(`\n(${((Date.now() - t0) / 1000).toFixed(1)}s, ${out.length} messages)`)
+  }
   session.close()
 }
 

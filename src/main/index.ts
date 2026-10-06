@@ -148,6 +148,8 @@ function createWindow() {
     minWidth: 720,
     minHeight: 520,
     show: false,
+    // In macOS fullscreen the close/minimise/zoom buttons are hidden. Keep them: the green button zooms the window instead.
+    fullscreenable: false,
     title: 'ExelSnap',
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#212121' : '#ffffff',
     titleBarStyle: mac ? 'hiddenInset' : 'default',
@@ -186,9 +188,7 @@ function buildMenu() {
         ...(app.isPackaged ? [] : ([{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }] as const)),
         { role: 'resetZoom' },
         { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' }
+        { role: 'zoomOut' }
       ]
     },
     { role: 'windowMenu' }

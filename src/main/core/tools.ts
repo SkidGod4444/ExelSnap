@@ -124,7 +124,8 @@ export function schemaText(tables: TableInfo[]): string {
         if (c.header && c.header !== c.name) line += `  [header: "${c.header}"]`
         if (c.type === 'VARCHAR' || c.type === 'BOOLEAN') {
           const many = c.distinct >= 1000 ? '1000+' : String(c.distinct)
-          line += `  ${many} distinct, e.g. ${c.samples.slice(0, 5).map((s) => JSON.stringify(s)).join(', ')}`
+          const shown = c.samples.slice(0, 5)
+          line += `  ${many} distinct${c.distinct > shown.length ? ` (only ${shown.length} shown)` : ''}: ${shown.map((s) => JSON.stringify(s)).join(', ')}`
         } else if (c.min !== undefined) {
           line += `  range ${c.min} … ${c.max}`
         }
@@ -155,12 +156,16 @@ export function systemPrompt(tables: TableInfo[]): string {
 ${data}
 
 How to work:
-- Never guess or invent numbers. Get every number from the run_sql tool, then copy it exactly from the result.
+- Never guess or invent numbers, names or any other value. Everything you state must come from a run_sql result in this conversation.
+- The table description above shows only a few example values per column, NOT the data. To list, count, find, name or check anything, query it with run_sql first.
 - Use only the tables and columns listed above. Wrap column names in double quotes.
-- Each run_sql call takes ONE DuckDB SELECT query. Prefer aggregates (SUM, AVG, COUNT, GROUP BY, ORDER BY … LIMIT) over selecting raw rows.
+- For an overview ("what is this?", "summarise this") look at the rows first: SELECT * FROM the table LIMIT 20, then say what one row represents, what each column holds and how many rows there are.
+- Each run_sql call takes ONE DuckDB SELECT query. For totals and comparisons use aggregates (SUM, AVG, COUNT, GROUP BY, ORDER BY).
+- When the user asks to list or show rows, select every matching row. Never add LIMIT unless the user asks for a top N.
+- To change the data (filter, sort, remove duplicates, add or clean a column, combine sheets or files) write a SELECT that returns the new version. The user can save any result as an Excel file with the Export button under it; mention that only when they asked for a changed, filtered or new version of the data.
 - Dates: use date_trunc('month', "col"), strftime, EXTRACT(year FROM "col").
 - A VARCHAR column that holds numbers or dates mixed with text: convert with TRY_CAST("col" AS DOUBLE) or try_strptime("col", '%d/%m/%Y').
 - If a query fails, read the error, fix the query and try again.
 - Use make_chart when the user asks for a chart, plot or graph, or when a trend over time is clearer as a picture.
-- Query results are already shown to the user as tables, so do not repeat the whole table. Answer in a few sentences of Markdown with the key numbers in **bold**.`
+- The user already sees every query result as a table right above your answer, so never re-type a result as a table. Answer in a few sentences of Markdown with the key numbers in **bold**; write out a list of values only when the user asked for a list.`
 }

@@ -17,6 +17,8 @@ export interface AgentRun {
   session: WorkbookSession
   history: ModelMessage[]
   userText: string
+  /** The user's own words, without the note about attached files (used to recognise small talk). */
+  question?: string
   temperature?: number
   signal?: AbortSignal
   maxSteps?: number
@@ -24,6 +26,9 @@ export interface AgentRun {
   out: ModelMessage[]
   onEvent: (e: AgentEvent) => void
 }
+
+/** Messages that need no data: forcing a query for "thanks" would only produce a pointless one. */
+const SMALL_TALK = /^\s*(hi+|hey+|hello+|yo|thanks?( you)?|thank you|ok(ay)?|cool|great|nice|bye|good (morning|afternoon|evening|night))\b[\s!.?]*$/i
 
 const KEEP_FULL = 12 // most recent history messages kept verbatim; older tool output is shortened
 
@@ -66,6 +71,10 @@ export async function runAgent(run: AgentRun): Promise<void> {
   let toolsUsed = 0
   let consecutiveErrors = 0
   let emptyRetries = 0
+  let groundingRetries = 0
+  // With data attached, the first move must be a query: small models otherwise answer from the few
+  // example values in the schema ("38 students: " followed by the 5 samples) and never look at the file.
+  const mustQuery = session.tables.length > 0 && !SMALL_TALK.test(run.question ?? run.userText)
   let repeats = 0
   const seen = new Set<string>()
   let nudge = false
@@ -76,7 +85,7 @@ export async function runAgent(run: AgentRun): Promise<void> {
     const messages: ModelMessage[] = [...compactHistory(run.history), ...added]
     if (nudge) {
       nudge = false
-      messages.push({ role: 'user', content: 'Please answer my question. Call run_sql to get the numbers you need.' })
+      messages.push({ role: 'user', content: 'Please answer my question. Call run_sql to get the data you need — do not answer from the example values in the table description.' })
     }
     if (lastStep) {
       messages.push({ role: 'user', content: 'Stop calling tools now. Answer with what you have found so far, and say what you could not determine.' })
@@ -84,7 +93,14 @@ export async function runAgent(run: AgentRun): Promise<void> {
 
     onEvent({ type: 'step-start' })
     const res = await provider.step(
-      { model, instructions: systemPrompt(session.tables), messages, tools: lastStep ? undefined : TOOLS, temperature: run.temperature },
+      {
+        model,
+        instructions: systemPrompt(session.tables),
+        messages,
+        tools: lastStep ? undefined : TOOLS,
+        toolChoice: mustQuery && toolsUsed === 0 ? 'required' : 'auto',
+        temperature: run.temperature
+      },
       { signal, onText: (delta) => onEvent({ type: 'text', delta }) }
     )
 
@@ -116,6 +132,13 @@ export async function runAgent(run: AgentRun): Promise<void> {
     // cannot be grounded in the data (small models happily announce an answer, then go and look).
     if (calls.length > 0 && toolsUsed === 0) text = ''
     text = text.trim()
+    // Servers that ignore tool_choice get one more chance to look at the data before their answer is accepted.
+    if (calls.length === 0 && text && mustQuery && toolsUsed === 0 && !lastStep && groundingRetries < 1) {
+      groundingRetries++
+      onEvent({ type: 'step-text', text: '' })
+      nudge = true
+      continue
+    }
     onEvent({ type: 'step-text', text })
 
     if (calls.length === 0) {

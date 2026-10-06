@@ -26,6 +26,8 @@ export interface StepRequest {
   instructions: string
   messages: ModelMessage[]
   tools?: ToolSet
+  /** 'required' makes the model call a tool instead of answering straight away. */
+  toolChoice?: 'auto' | 'required'
   temperature?: number
 }
 
@@ -97,6 +99,7 @@ export class ModelClient {
         instructions: req.instructions,
         messages: req.messages,
         tools: req.tools,
+        toolChoice: req.tools ? req.toolChoice : undefined,
         temperature: req.temperature ?? 0.2,
         abortSignal: opts.signal,
         // A local server either answers or is down; retrying only delays the error.

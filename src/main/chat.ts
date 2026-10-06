@@ -227,6 +227,7 @@ export class ChatService {
         session,
         history: c.history,
         userText: (text || 'Give me a quick overview of this data.') + fileNote,
+        question: text,
         temperature: this.store.settings.temperature,
         signal: ctrl.signal,
         out,
