@@ -1,43 +1,29 @@
+import { tool, type ToolSet } from 'ai'
+import { z } from 'zod'
 import type { ChartSpec, ChartType, QueryResult, TableInfo } from '@shared/types'
-import type { ToolDef } from './provider'
 import type { WorkbookSession } from './workbook'
 
-export const TOOL_DEFS: ToolDef[] = [
-  {
-    type: 'function',
-    function: {
-      name: 'run_sql',
-      description:
-        'Run ONE read-only DuckDB SQL query over the spreadsheet tables and get the result rows. Use it for every number you report. The result is also shown to the user as a table.',
-      parameters: {
-        type: 'object',
-        properties: { sql: { type: 'string', description: 'A single DuckDB SELECT query.' } },
-        required: ['sql']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'make_chart',
-      description:
-        'Draw a chart for the user from a DuckDB SQL query. The query should return one label/date column (x) and one or more numeric columns (y).',
-      parameters: {
-        type: 'object',
-        properties: {
-          sql: { type: 'string', description: 'DuckDB SELECT query producing the chart data.' },
-          type: { type: 'string', enum: ['bar', 'line', 'area', 'pie', 'scatter'] },
-          x: { type: 'string', description: 'Result column for the x axis / pie labels.' },
-          y: { type: 'array', items: { type: 'string' }, description: 'Numeric result column(s) to plot.' },
-          title: { type: 'string' }
-        },
-        required: ['sql', 'type']
-      }
-    }
-  }
-]
+/** Tool definitions for the AI SDK. No `execute`: the agent loop runs them so it can guard against loops and bad arguments. */
+export const TOOLS = {
+  run_sql: tool({
+    description:
+      'Run ONE read-only DuckDB SQL query over the spreadsheet tables and get the result rows. Use it for every number you report. The result is also shown to the user as a table.',
+    inputSchema: z.object({ sql: z.string().describe('A single DuckDB SELECT query.') })
+  }),
+  make_chart: tool({
+    description:
+      'Draw a chart for the user from a DuckDB SQL query. The query should return one label/date column (x) and one or more numeric columns (y).',
+    inputSchema: z.object({
+      sql: z.string().describe('DuckDB SELECT query producing the chart data.'),
+      type: z.enum(['bar', 'line', 'area', 'pie', 'scatter']),
+      x: z.string().optional().describe('Result column for the x axis / pie labels.'),
+      y: z.array(z.string()).optional().describe('Numeric result column(s) to plot.'),
+      title: z.string().optional()
+    })
+  })
+} satisfies ToolSet
 
-export const TOOL_NAMES = TOOL_DEFS.map((t) => t.function.name)
+export const TOOL_NAMES = Object.keys(TOOLS)
 
 const MODEL_ROWS = 40 // rows of each result the model gets to read
 const UI_ROWS = 500 // rows the user gets to see
@@ -50,8 +36,10 @@ export interface ToolOutcome {
   error?: string
 }
 
-export function parseArgs(name: string, raw: string): Record<string, unknown> {
-  const s = raw.trim()
+/** Tool arguments as an object. Accepts what the SDK parsed, a JSON string, or (from small models) bare SQL. */
+export function parseArgs(name: string, input: unknown): Record<string, unknown> {
+  if (input && typeof input === 'object') return input as Record<string, unknown>
+  const s = String(input ?? '').trim()
   if (!s) return {}
   try {
     const v = JSON.parse(s)
@@ -124,22 +112,32 @@ export async function runTool(session: WorkbookSession, name: string, args: Reco
 
 // ---------------------------------------------------------------- system prompt
 
+const DETAILED_COLUMNS = 60
+const LISTED_COLUMNS = 200
+
 export function schemaText(tables: TableInfo[]): string {
   return tables
     .map((t) => {
       const head = `TABLE "${t.table}" — ${t.rowCount.toLocaleString('en-US')} rows (file ${t.file}, sheet "${t.sheet}")`
-      const cols = t.columns.map((c) => {
+      const cols = t.columns.slice(0, DETAILED_COLUMNS).map((c) => {
         let line = `  "${c.name}" ${c.type}`
         if (c.header && c.header !== c.name) line += `  [header: "${c.header}"]`
         if (c.type === 'VARCHAR' || c.type === 'BOOLEAN') {
           const many = c.distinct >= 1000 ? '1000+' : String(c.distinct)
-          line += `  ${many} distinct, e.g. ${c.samples.slice(0, 5).map((s) => JSON.stringify(s)).join(', ')}`
+          const shown = c.samples.slice(0, 5)
+          line += `  ${many} distinct${c.distinct > shown.length ? ` (only ${shown.length} shown)` : ''}: ${shown.map((s) => JSON.stringify(s)).join(', ')}`
         } else if (c.min !== undefined) {
           line += `  range ${c.min} … ${c.max}`
         }
         if (c.nulls > 0) line += `  (${c.nulls} empty)`
         return line
       })
+      // Very wide sheets would fill a small model's context: the rest are listed by name and type only.
+      const rest = t.columns.slice(DETAILED_COLUMNS)
+      if (rest.length) {
+        const listed = rest.slice(0, LISTED_COLUMNS).map((c) => `"${c.name}" ${c.type}`).join(', ')
+        cols.push(`  … and ${rest.length} more columns: ${listed}${rest.length > LISTED_COLUMNS ? ', … (run DESCRIBE to see all)' : ''}`)
+      }
       const notes = t.notes.map((n) => `  note: ${n}`)
       return [head, ...cols, ...notes].join('\n')
     })
@@ -147,7 +145,8 @@ export function schemaText(tables: TableInfo[]): string {
 }
 
 export function systemPrompt(tables: TableInfo[]): string {
-  const today = new Date().toISOString().slice(0, 10)
+  // Local calendar date (toISOString is UTC, which is yesterday for part of the day east of Greenwich).
+  const today = new Date().toLocaleDateString('en-CA')
   const data =
     tables.length > 0
       ? `The user's spreadsheets are loaded as DuckDB tables:\n\n${schemaText(tables)}`
@@ -157,11 +156,16 @@ export function systemPrompt(tables: TableInfo[]): string {
 ${data}
 
 How to work:
-- Never guess or invent numbers. Get every number from the run_sql tool, then copy it exactly from the result.
+- Never guess or invent numbers, names or any other value. Everything you state must come from a run_sql result in this conversation.
+- The table description above shows only a few example values per column, NOT the data. To list, count, find, name or check anything, query it with run_sql first.
 - Use only the tables and columns listed above. Wrap column names in double quotes.
-- Each run_sql call takes ONE DuckDB SELECT query. Prefer aggregates (SUM, AVG, COUNT, GROUP BY, ORDER BY … LIMIT) over selecting raw rows.
+- For an overview ("what is this?", "summarise this") look at the rows first: SELECT * FROM the table LIMIT 20, then say what one row represents, what each column holds and how many rows there are.
+- Each run_sql call takes ONE DuckDB SELECT query. For totals and comparisons use aggregates (SUM, AVG, COUNT, GROUP BY, ORDER BY).
+- When the user asks to list or show rows, select every matching row. Never add LIMIT unless the user asks for a top N.
+- To change the data (filter, sort, remove duplicates, add or clean a column, combine sheets or files) write a SELECT that returns the new version. The user can save any result as an Excel file with the Export button under it; mention that only when they asked for a changed, filtered or new version of the data.
 - Dates: use date_trunc('month', "col"), strftime, EXTRACT(year FROM "col").
+- A VARCHAR column that holds numbers or dates mixed with text: convert with TRY_CAST("col" AS DOUBLE) or try_strptime("col", '%d/%m/%Y').
 - If a query fails, read the error, fix the query and try again.
 - Use make_chart when the user asks for a chart, plot or graph, or when a trend over time is clearer as a picture.
-- Query results are already shown to the user as tables, so do not repeat the whole table. Answer in a few sentences of Markdown with the key numbers in **bold**.`
+- The user already sees every query result as a table right above your answer, so never re-type a result as a table. Answer in a few sentences of Markdown with the key numbers in **bold**; write out a list of values only when the user asked for a list.`
 }

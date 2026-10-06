@@ -22,6 +22,30 @@ function Dialog({ title, onClose, wide, children, flush }: { title: ReactNode; o
   )
 }
 
+const BACKEND_HINT = {
+  cpu: 'CPU only: least memory (about the size of the model). Recommended.',
+  gpu: 'GPU only: the graphics chip runs the model. Needs several times the memory of CPU mode, so only small models fit.',
+  hybrid: 'Hybrid: the GPU reads the prompt, the CPU writes the answer. Needs a SAPIENT build with GPU support and as much memory as GPU mode.'
+} as const
+
+/** Where the engine comes from and whether it is current. */
+function engineLine(status: SapientStatus): string {
+  const { source, updating, note } = status.engine
+  if (updating) return 'Checking for a SAPIENT update…'
+  const origin = source === 'custom' ? `Custom binary (not updated by ExelSnap): ${status.binary}` : `${status.binary} · checked for updates each time ExelSnap opens.`
+  return note ? `${origin} ${note}` : origin
+}
+
+/** Which model suits this computer in the current mode, in one sentence. */
+function modelHint(status: SapientStatus | null): string {
+  if (!status) return ''
+  const best = status.models.find((m) => m.recommended)
+  const where = `${status.device.memoryGb} GB of memory, ${status.backend === 'cpu' ? 'CPU' : status.backend === 'gpu' ? 'GPU' : 'hybrid'} mode`
+  if (!best) return `No model fits this computer comfortably (${where}). Try CPU mode or a smaller model.`
+  const name = shortModel(best.id)
+  return `Best for this computer (${where}): ${name}, about ${best.residentGb} GB once loaded${best.downloaded ? '' : ' — not downloaded yet, get it from the model menu'}. Auto uses the best one you have.`
+}
+
 export function SettingsDialog({
   settings,
   status,
@@ -39,7 +63,7 @@ export function SettingsDialog({
 }) {
   const [url, setUrl] = useState(settings.baseUrl)
   const [bin, setBin] = useState(settings.sapientPath)
-  const models = [...new Set([...(status?.downloaded ?? []), ...(status?.resident ?? [])])].sort()
+  const models = (status?.models ?? []).filter((m) => m.downloaded).map((m) => m.id)
 
   return (
     <Dialog title="Settings" onClose={onClose}>
@@ -52,7 +76,7 @@ export function SettingsDialog({
             {status?.version ? ` · v${status.version}` : ''}
           </div>
           <div className="hint">
-            {status?.error ? status.error : status?.binary ?? 'Install with: npm i -g openhorizon, then run `openhorizon update`.'}
+            {status?.error ? status.error : status?.binary ? engineLine(status) : status?.engine.installing ? 'Downloading SAPIENT…' : (status?.engine.note ?? 'ExelSnap installs SAPIENT the first time it opens.')}
           </div>
         </div>
         {status?.state === 'online' ? (
@@ -62,15 +86,21 @@ export function SettingsDialog({
             </button>
           )
         ) : (
-          <button className="btn primary" onClick={onStart} disabled={!status?.binary || status.state === 'starting'}>
-            {status?.state === 'starting' ? <LoaderCircle size={14} className="spin" /> : null} Start
-          </button>
+          status?.binary ? (
+            <button className="btn primary" onClick={onStart} disabled={status.state === 'starting'}>
+              {status.state === 'starting' ? <LoaderCircle size={14} className="spin" /> : null} Start
+            </button>
+          ) : (
+            <button className="btn primary" onClick={() => void window.api.setupSapient()} disabled={!status || status.engine.installing}>
+              {status?.engine.installing ? <LoaderCircle size={14} className="spin" /> : null} Set up
+            </button>
+          )
         )}
       </div>
       <div className="setting">
         <div className="label">
           <div>Model</div>
-          <div className="hint">7B models (qwen2.5-7b-q4, qwen2.5-coder-7b) are much more reliable for analysis than 0.5–1.5B.</div>
+          <div className="hint">{modelHint(status)}</div>
         </div>
         <select className="field" value={settings.model} onChange={(e) => onChange({ model: e.target.value })}>
           <option value="">Auto ({status ? shortModel(status.activeModel) : '…'})</option>
@@ -81,6 +111,25 @@ export function SettingsDialog({
           ))}
           {settings.model && !models.includes(settings.model) && <option value={settings.model}>{shortModel(settings.model)}</option>}
         </select>
+      </div>
+      <div className="setting">
+        <div className="label">
+          <div>Run models on</div>
+          <div className="hint">
+            {BACKEND_HINT[settings.backend]}
+            {status?.backendNote ? ` ${status.backendNote}` : ''}
+            {status?.state === 'online' && !status.managed
+              ? ' SAPIENT was started outside ExelSnap: set this to the mode you started it in, the memory estimates rely on it. (Started without options it runs on the GPU and keeps 3 models loaded.)'
+              : ''}
+          </div>
+        </div>
+        <div className="segmented">
+          {(['cpu', 'gpu', 'hybrid'] as const).map((b) => (
+            <button key={b} className={settings.backend === b ? 'on' : ''} onClick={() => settings.backend !== b && onChange({ backend: b })}>
+              {b === 'cpu' ? 'CPU' : b === 'gpu' ? 'GPU' : 'Hybrid'}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="setting">
         <div className="label">
@@ -104,7 +153,7 @@ export function SettingsDialog({
       <div className="setting">
         <div className="label">
           <div>SAPIENT binary</div>
-          <div className="hint">Leave empty to auto-detect.</div>
+          <div className="hint">Leave empty to use the SAPIENT installed on this computer (ExelSnap installs it if missing).</div>
         </div>
         <input
           className="field"
@@ -121,6 +170,23 @@ export function SettingsDialog({
           <div className="hint">Lower is more precise. {settings.temperature.toFixed(1)}</div>
         </div>
         <input type="range" min={0} max={1} step={0.1} value={settings.temperature} onChange={(e) => onChange({ temperature: Number(e.target.value) })} />
+      </div>
+
+      <div className="setting-section">Help</div>
+      <div className="setting">
+        <div className="label">
+          <div>Debug log</div>
+          <div className="hint">
+            Records what the app does — your questions, the queries the model writes, timings and errors — but never the rows of your spreadsheets. Export it and
+            send the file with a bug report.
+          </div>
+        </div>
+        <button className="btn" onClick={() => void window.api.showDebugLog()}>
+          Show folder
+        </button>
+        <button className="btn primary" onClick={() => void window.api.exportDebugLog()}>
+          Export…
+        </button>
       </div>
 
       <div className="setting-section">Appearance</div>
@@ -202,7 +268,7 @@ export function PreviewDialog({ conversationId, attachment, onClose }: { convers
             <LoaderCircle size={14} className="spin" /> Loading…
           </div>
         )}
-        {data && <DataTable result={data.result} name={table} tall showTypes />}
+        {data && <DataTable result={data.result} name={table} tall showTypes source={{ conversationId, sql: `SELECT * FROM "${table}"` }} />}
       </div>
     </Dialog>
   )

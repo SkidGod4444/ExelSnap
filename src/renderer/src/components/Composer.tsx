@@ -1,5 +1,16 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { ArrowUp, Plus, Square } from 'lucide-react'
+import {
+  PromptInput,
+  PromptInputBody,
+  PromptInputButton,
+  PromptInputFooter,
+  PromptInputHeader,
+  PromptInputSubmit,
+  PromptInputTextarea,
+  PromptInputTools,
+  usePromptInputAttachments
+} from '@/components/ai-elements/prompt-input'
 import { FileCard, type DraftFile } from './FileCard'
 
 export interface ComposerHandle {
@@ -19,6 +30,19 @@ interface Props {
   onOpenFile: (id: string) => void
 }
 
+/**
+ * PromptInput keeps its own list of dropped/pasted File objects and inlines them as data URLs on submit.
+ * Spreadsheets are attached by path through Electron instead (button, window drop, Finder), so discard that list.
+ */
+function DiscardFormFiles() {
+  const attachments = usePromptInputAttachments()
+  const count = attachments.files.length
+  useEffect(() => {
+    if (count > 0) attachments.clear()
+  }, [count, attachments])
+  return null
+}
+
 export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
   { files, running, hasData, dataName, onSend, onStop, onAttach, onRemoveFile, onOpenFile },
   ref
@@ -33,14 +57,6 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
       requestAnimationFrame(() => ta.current?.focus())
     }
   }))
-
-  // Auto-grow up to the CSS max-height.
-  useEffect(() => {
-    const el = ta.current
-    if (!el) return
-    el.style.height = '0px'
-    el.style.height = `${el.scrollHeight}px`
-  }, [text])
 
   useEffect(() => ta.current?.focus(), [])
 
@@ -57,42 +73,46 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
   const placeholder = dataName ? `Ask anything about ${dataName}` : hasData ? 'Ask anything about your data' : 'Attach a spreadsheet, then ask anything'
 
   return (
-    <div className="composer" onClick={(e) => e.target === e.currentTarget && ta.current?.focus()}>
+    <PromptInput className="composer" onSubmit={submit}>
+      <DiscardFormFiles />
       {files.length > 0 && (
-        <div className="composer-files">
+        <PromptInputHeader className="composer-files gap-2 px-3 pt-3">
           {files.map((f) => (
             <FileCard key={f.id} file={f} onOpen={f.status === 'ready' ? () => onOpenFile(f.id) : undefined} onRemove={() => onRemoveFile(f.id)} />
           ))}
-        </div>
+        </PromptInputHeader>
       )}
-      <textarea
-        ref={ta}
-        rows={1}
-        value={text}
-        placeholder={placeholder}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault()
-            submit()
-          }
-        }}
-      />
-      <div className="composer-bar">
-        <button className="round" onClick={onAttach} title="Attach spreadsheet (⌘O)" aria-label="Attach spreadsheet">
-          <Plus size={20} />
-        </button>
-        <div className="grow" />
-        {running ? (
-          <button className="send-btn" onClick={onStop} title="Stop" aria-label="Stop">
-            <Square size={14} fill="currentColor" />
-          </button>
-        ) : (
-          <button className="send-btn" onClick={submit} disabled={!canSend} title="Send" aria-label="Send">
-            <ArrowUp size={20} strokeWidth={2.25} />
-          </button>
-        )}
-      </div>
-    </div>
+      <PromptInputBody>
+        <PromptInputTextarea
+          ref={ta}
+          value={text}
+          placeholder={placeholder}
+          onChange={(e) => setText(e.target.value)}
+          className="max-h-52 min-h-12 px-4 pt-3.5 text-base md:text-base"
+        />
+      </PromptInputBody>
+      <PromptInputFooter className="px-2.5 pb-2.5">
+        <PromptInputTools>
+          <PromptInputButton
+            className="rounded-full"
+            size="icon-sm"
+            onClick={onAttach}
+            aria-label="Attach spreadsheet"
+            tooltip={{ content: 'Attach spreadsheet', shortcut: window.api.platform === 'darwin' ? '⌘O' : 'Ctrl+O' }}
+          >
+            <Plus className="size-5" />
+          </PromptInputButton>
+        </PromptInputTools>
+        <PromptInputSubmit
+          className="send-btn rounded-full"
+          aria-label={running ? 'Stop' : 'Send'}
+          status={running ? 'streaming' : 'ready'}
+          onStop={onStop}
+          disabled={!running && !canSend}
+        >
+          {running ? <Square className="size-3.5" fill="currentColor" /> : <ArrowUp className="size-5" strokeWidth={2.25} />}
+        </PromptInputSubmit>
+      </PromptInputFooter>
+    </PromptInput>
   )
 })

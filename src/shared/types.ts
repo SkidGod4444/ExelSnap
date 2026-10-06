@@ -1,4 +1,5 @@
 // Types shared by the main process (agent, workbook engine) and the renderer (chat UI).
+import type { ModelMessage } from 'ai'
 
 export type ColumnType = 'BIGINT' | 'DOUBLE' | 'BOOLEAN' | 'DATE' | 'TIMESTAMP' | 'VARCHAR'
 
@@ -42,6 +43,12 @@ export interface QueryResult {
   truncated: boolean // more rows existed than the cap
 }
 
+/** Where a result came from, so an export can re-run it without the on-screen row cap. */
+export interface ResultSource {
+  conversationId: string
+  sql: string
+}
+
 export type ChartType = 'bar' | 'line' | 'area' | 'pie' | 'scatter'
 
 export interface ChartSpec {
@@ -82,13 +89,6 @@ export interface ChatMessage {
   durationMs?: number
 }
 
-/** OpenAI chat-completions message, as sent to SAPIENT. */
-export interface LlmMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string | null
-  tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[]
-  tool_call_id?: string
-}
 
 export interface Conversation {
   id: string
@@ -97,7 +97,7 @@ export interface Conversation {
   updatedAt: number
   attachments: Attachment[]
   messages: ChatMessage[]
-  history: LlmMessage[] // model-facing transcript (without system prompt)
+  history: ModelMessage[] // model-facing transcript in AI SDK format (without system prompt)
 }
 
 export interface ConversationSummary {
@@ -106,13 +106,35 @@ export interface ConversationSummary {
   updatedAt: number
 }
 
+/** Where SAPIENT runs the model. GPU and hybrid are faster to read long prompts but hold a second copy of the weights. */
+export type Backend = 'cpu' | 'gpu' | 'hybrid'
+
+export interface DeviceInfo {
+  memoryGb: number
+  chip: string
+  cores: number
+}
+
+/** One model and what it costs on this computer with the current backend. */
+export interface ModelAdvice {
+  id: string
+  sizeGb: number // on disk
+  residentGb: number // memory once loaded
+  peakGb: number // memory while loading
+  fit: 'fits' | 'tight' | 'too-large'
+  downloaded: boolean
+  recommended: boolean // the most capable model that fits
+  typicalSeconds?: number // how long an answer has taken on this computer in the current mode, once known
+}
+
 export interface Settings {
   baseUrl: string
-  model: string // '' = auto (OpenHorizon default, else first served model)
+  model: string // '' = auto (the most capable downloaded model that fits in memory)
   temperature: number
   autoStartSapient: boolean
   sapientPath: string // '' = auto-detect
   theme: 'system' | 'dark' | 'light'
+  backend: Backend
 }
 
 export interface SapientStatus {
@@ -124,6 +146,13 @@ export interface SapientStatus {
   resident: string[] // models loaded in memory
   downloaded: string[] // models in the local cache (`sapient list`)
   activeModel: string // model ExelSnap will use
+  device: DeviceInfo
+  backend: Backend // what the memory estimates below assume
+  backendNote?: string // e.g. the chosen backend isn't in this SAPIENT build
+  models: ModelAdvice[] // downloaded and recommended chat models, smallest first
+  pulling?: string // model being downloaded
+  /** The SAPIENT binary: a path set in Settings, the one installed on this computer, or none yet. */
+  engine: { source: 'custom' | 'system' | 'none'; installing: boolean; updating: boolean; note?: string }
   error?: string
 }
 
@@ -137,3 +166,5 @@ export type AppEvent =
   | { type: 'conversations'; conversations: ConversationSummary[] }
   | { type: 'conversation'; conversation: Conversation }
   | { type: 'sapient'; status: SapientStatus }
+  /** Files were opened from Finder / the Dock; fetch them with takeOpenedFiles(). */
+  | { type: 'open-files' }

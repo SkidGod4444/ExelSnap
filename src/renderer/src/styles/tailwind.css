@@ -1,0 +1,82 @@
+/* Tailwind + shadcn/ui tokens for the AI Elements components.
+   The app's own stylesheet sits in the `app` layer: above Tailwind's reset, below its utilities,
+   so utility classes on shadcn components win over the app's element rules. */
+@layer theme, base, app, components, utilities;
+
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import '../styles.css' layer(app);
+
+/* Classes used inside streamdown (markdown renderer) */
+@source '../../../../node_modules/streamdown/dist/*.js';
+@source '../../../../node_modules/@streamdown/code/dist/*.js';
+
+/* Light/dark follows the OS (Electron's nativeTheme), not a `.dark` class. */
+@custom-variant dark (@media (prefers-color-scheme: dark));
+
+/* shadcn tokens, mapped onto the app palette defined in styles.css */
+:root {
+  --radius: 0.75rem;
+  --background: var(--bg);
+  --foreground: var(--text);
+  --card: var(--bg);
+  --card-foreground: var(--text);
+  --popover: var(--bg-menu);
+  --popover-foreground: var(--text);
+  --primary: var(--send-bg);
+  --primary-foreground: var(--send-fg);
+  --secondary: var(--bg-elev);
+  --secondary-foreground: var(--text);
+  --muted: var(--bg-elev);
+  --muted-foreground: var(--text-2);
+  --accent: var(--bg-elev);
+  --accent-foreground: var(--text);
+  --destructive: var(--danger);
+  --input: var(--border-strong);
+  --ring: #2a78d6;
+}
+
+@theme inline {
+  --font-sans: var(--font);
+  --font-mono: var(--mono);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+}
+
+/* Unlayered on purpose: these restyle shadcn internals and must win over their utility classes. */
+.composer {
+  max-width: var(--thread-w);
+  margin: 0 auto;
+}
+.composer > [data-slot='input-group'] {
+  border: 0;
+  border-radius: 28px;
+  background: var(--bg-composer);
+  box-shadow: var(--shadow-composer);
+}

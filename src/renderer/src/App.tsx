@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ChartLine, FileSpreadsheet, ListOrdered, Paperclip, ShieldCheck, Sparkles } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChartLine, FileSpreadsheet, ListOrdered, Paperclip, ShieldCheck, Sparkles } from 'lucide-react'
 import type { Attachment, ChatMessage, Conversation, ConversationSummary, SapientStatus, Settings, TableInfo } from '@shared/types'
+import { Conversation as Thread, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
+import { Suggestion } from '@/components/ai-elements/suggestion'
 import { Composer, type ComposerHandle } from './components/Composer'
 import { DropOverlay, PreviewDialog, SettingsDialog } from './components/Dialogs'
 import type { DraftFile } from './components/FileCard'
 import { Header } from './components/Header'
 import { AssistantMessage, UserMessage } from './components/Message'
 import { Sidebar } from './components/Sidebar'
+import logo from './assets/logo.png'
 
 const api = window.api
 const SUPPORTED = /\.(xlsx|xlsm|xlsb|xls|ods|csv|tsv)$/i
@@ -45,13 +48,10 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [preview, setPreview] = useState<Attachment | null>(null)
   const [dragging, setDragging] = useState(false)
-  const [atBottom, setAtBottom] = useState(true)
 
   const convRef = useRef<Conversation | null>(null)
   convRef.current = conv
   const composer = useRef<ComposerHandle>(null)
-  const scroller = useRef<HTMLDivElement>(null)
-  const stick = useRef(true)
   const attachChain = useRef<Promise<unknown>>(Promise.resolve())
 
   // ------------------------------------------------------------ bootstrap + events
@@ -81,30 +81,10 @@ export default function App() {
     }
   }, [sidebarOpen])
 
-  // ------------------------------------------------------------ scrolling
-  const scrollToBottom = useCallback((smooth = false) => {
-    const el = scroller.current
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
-    stick.current = true
-  }, [])
-
-  useLayoutEffect(() => {
-    if (stick.current) scrollToBottom()
-  }, [conv?.messages, scrollToBottom])
-
-  const onScroll = () => {
-    const el = scroller.current
-    if (!el) return
-    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    stick.current = bottom
-    setAtBottom(bottom)
-  }
-
   // ------------------------------------------------------------ actions
   const newChat = useCallback(() => {
     setConv(null)
     setDraft([])
-    stick.current = true
     requestAnimationFrame(() => composer.current?.focus())
   }, [])
 
@@ -113,9 +93,7 @@ export default function App() {
     if (!c) return
     setConv(c)
     setDraft([])
-    stick.current = true
-    requestAnimationFrame(() => scrollToBottom())
-  }, [scrollToBottom])
+  }, [])
 
   const attachPaths = useCallback((paths: string[]) => {
     if (paths.length === 0) return
@@ -150,6 +128,13 @@ export default function App() {
 
   const pickFiles = useCallback(async () => attachPaths(await api.pickFiles()), [attachPaths])
 
+  // Files opened from Finder ("Open With", or dropped on the Dock icon).
+  useEffect(() => {
+    const take = () => void api.takeOpenedFiles().then(attachPaths)
+    take()
+    return api.onEvent((e) => e.type === 'open-files' && take())
+  }, [attachPaths])
+
   const removeDraft = useCallback(async (id: string) => {
     setDraft((d) => d.filter((f) => f.id !== id))
     const c = convRef.current
@@ -160,13 +145,11 @@ export default function App() {
     async (text: string) => {
       const ids = draft.filter((f) => f.status === 'ready').map((f) => f.id)
       if (!text && ids.length === 0) return
-      stick.current = true
       const c = await api.send(convRef.current?.id ?? null, text, ids)
       setConv(c)
       setDraft([])
-      requestAnimationFrame(() => scrollToBottom())
     },
-    [draft, scrollToBottom]
+    [draft]
   )
 
   const retry = useCallback(() => {
@@ -256,6 +239,8 @@ export default function App() {
   const dataName = readyDraft[readyDraft.length - 1]?.name ?? conv?.attachments[conv.attachments.length - 1]?.name
   const tables = useMemo(() => [...(conv?.attachments ?? []).flatMap((a) => a.tables)], [conv?.attachments])
   const empty = messages.length === 0
+  // First run: the engine ships with the app, but a model still has to be downloaded once.
+  const firstModel = status?.binary && !status.models.some((m) => m.downloaded) ? status.models.find((m) => m.recommended) : undefined
 
   const composerEl = (
     <Composer
@@ -295,6 +280,7 @@ export default function App() {
           onToggleSidebar={() => setSidebarOpen(true)}
           onNew={newChat}
           onPickModel={(m) => void updateSettings({ model: m })}
+          onPullModel={(m) => void api.pullModel(m).then(setStatus)}
           onStartEngine={() => void startEngine()}
           onStopEngine={() => void stopEngine()}
           onOpenSettings={() => setShowSettings(true)}
@@ -302,53 +288,85 @@ export default function App() {
 
         {empty ? (
           <div className="empty">
+            <img className="empty-logo" src={logo} alt="" draggable={false} />
             <h1>{tables.length ? 'What should we look at?' : 'What should we analyze today?'}</h1>
             <div className="composer-wrap centered">{composerEl}</div>
             <div className="suggestions">
               {tables.length > 0 ? (
                 suggestionsFor(tables).map((s) => (
-                  <button key={s.label} className="suggestion" onClick={() => void send(s.prompt)} disabled={running}>
-                    <s.icon size={16} /> {s.label}
-                  </button>
+                  <Suggestion key={s.label} className="h-10 text-muted-foreground" suggestion={s.prompt} onClick={(p) => void send(p)} disabled={running}>
+                    <s.icon /> {s.label}
+                  </Suggestion>
                 ))
               ) : (
-                <button className="suggestion" onClick={() => void pickFiles()}>
-                  <Paperclip size={16} /> Attach a spreadsheet
-                </button>
+                <Suggestion className="h-10 text-muted-foreground" suggestion="" onClick={() => void pickFiles()}>
+                  <Paperclip /> Attach a spreadsheet
+                </Suggestion>
               )}
             </div>
+            {status && !status.binary && (
+              <div className="setup-note">
+                {status.engine.installing ? (
+                  <div>
+                    <strong>Setting up.</strong> Downloading SAPIENT, the engine that runs the model on this computer (about 8 MB)…
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <strong>SAPIENT isn't installed yet.</strong> {status.engine.note ?? 'ExelSnap downloads it the first time it opens.'}
+                    </div>
+                    <button className="btn primary" onClick={() => void api.setupSapient().then(setStatus)}>
+                      Install SAPIENT
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+            {firstModel && (
+              <div className="setup-note">
+                <div>
+                  <strong>One download to get started.</strong> ExelSnap needs a language model on this computer. Best fit for this one ({status!.device.memoryGb} GB of
+                  memory): {firstModel.id.replace(/^openhorizon\//, '')}.
+                </div>
+                <button className="btn primary" onClick={() => void api.pullModel(firstModel.id).then(setStatus)} disabled={!!status!.pulling}>
+                  {status!.pulling ? 'Downloading… this can take a few minutes' : `Download (${firstModel.sizeGb} GB)`}
+                </button>
+              </div>
+            )}
             {tables.length === 0 && (
               <p className="empty-note">
-                <FileSpreadsheet size={14} style={{ verticalAlign: '-2px' }} /> Drop an Excel or CSV file anywhere. It never leaves this computer —
-                <br />
-                SAPIENT runs the model locally and DuckDB crunches the numbers.
+                <FileSpreadsheet size={14} className="inline align-[-2px]" /> Drop an Excel or CSV file anywhere. It never leaves this computer — SAPIENT runs the model locally and DuckDB
+                crunches the numbers.
               </p>
             )}
           </div>
         ) : (
           <>
-            <div className="scroller" ref={scroller} onScroll={onScroll}>
-              <div className="thread">
+            {/* Remounted per chat so each one opens at its latest message. */}
+            <Thread key={conv?.id} className="scroller" initial="instant">
+              <ConversationContent className="thread mx-auto w-full max-w-3xl gap-6 px-6 pt-2 pb-12 max-[860px]:px-4">
                 {messages.map((m, i) =>
                   m.role === 'user' ? (
                     <UserMessage key={m.id} message={m} onOpenFile={openAttachment} />
                   ) : (
-                    <AssistantMessage key={m.id} message={m} isLast={i === messages.length - 1} onRetry={retry} onStartEngine={() => void startEngine()} />
+                    <AssistantMessage key={m.id} message={m} conversationId={conv!.id} isLast={i === messages.length - 1} onRetry={retry} onStartEngine={() => void startEngine()} />
                   )
                 )}
-              </div>
-            </div>
-            {!atBottom && (
-              <button className="scroll-down" onClick={() => scrollToBottom(true)} aria-label="Scroll to bottom">
-                <ArrowDown size={18} />
-              </button>
-            )}
+              </ConversationContent>
+              <ConversationScrollButton aria-label="Scroll to bottom" />
+            </Thread>
             <div className="composer-wrap">
               {composerEl}
               <div className="disclaimer">ExelSnap runs fully offline. Local models can make mistakes — check the query results.</div>
             </div>
           </>
         )}
+        <footer className="powered">
+          Powered by{' '}
+          <a href="https://sapient.openhorizon.so/" target="_blank" rel="noreferrer">
+            Sapient from OpenHorizon Labs
+          </a>
+        </footer>
       </main>
 
       {dragging && <DropOverlay />}

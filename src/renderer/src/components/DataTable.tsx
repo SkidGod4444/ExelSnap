@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Check, Copy, Download } from 'lucide-react'
-import type { QueryResult } from '@shared/types'
+import type { QueryResult, ResultSource } from '@shared/types'
 import { formatCell, NUMERIC_TYPE, toTsv } from '../lib/format'
 import { useCopy } from '../lib/hooks'
 
@@ -11,13 +11,16 @@ export function DataTable({
   name = 'query-result',
   tall = false,
   showTypes = false,
-  footer = true
+  footer = true,
+  source
 }: {
   result: QueryResult
   name?: string
   tall?: boolean
   showTypes?: boolean
   footer?: boolean
+  /** Lets the export re-run the query in full instead of saving only the rows shown. */
+  source?: ResultSource
 }) {
   const [all, setAll] = useState(false)
   const [copied, copy] = useCopy()
@@ -78,9 +81,9 @@ export function DataTable({
             {copied ? <Check size={14} /> : <Copy size={14} />}
             {copied ? 'Copied' : 'Copy'}
           </button>
-          <button className="chip-btn" onClick={() => void window.api.exportCsv(name, result)}>
+          <button className="chip-btn" onClick={() => void window.api.exportData(name, result, source)} title="Save all rows as an Excel workbook or CSV">
             <Download size={14} />
-            CSV
+            Export
           </button>
         </div>
       )}

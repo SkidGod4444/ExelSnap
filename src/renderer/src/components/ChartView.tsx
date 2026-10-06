@@ -19,7 +19,7 @@ import {
   YAxis
 } from 'recharts'
 import { ChartColumn, Download, Table2 } from 'lucide-react'
-import type { ChartSpec, QueryResult } from '@shared/types'
+import type { ChartSpec, QueryResult, ResultSource } from '@shared/types'
 import { formatAxis, formatCell } from '../lib/format'
 import { useCssVars } from '../lib/hooks'
 import { DataTable } from './DataTable'
@@ -46,7 +46,7 @@ function ChartTooltip({ active, payload, label, xLabel }: any) {
   )
 }
 
-export function ChartView({ spec, result }: { spec: ChartSpec; result: QueryResult }) {
+export function ChartView({ spec, result, source }: { spec: ChartSpec; result: QueryResult; source?: ResultSource }) {
   const vars = useCssVars(VARS)
   const colors = vars.slice(0, 8)
   const [grid, axis, bg, hover] = vars.slice(8)
@@ -165,7 +165,7 @@ export function ChartView({ spec, result }: { spec: ChartSpec; result: QueryResu
         <button className={`chip-btn${mode === 'table' ? ' active' : ''}`} onClick={() => setMode('table')}>
           <Table2 size={14} /> Data
         </button>
-        <button className="chip-btn" onClick={() => void window.api.exportCsv(title.replace(/[^\w-]+/g, '_'), result)} title="Export data as CSV">
+        <button className="chip-btn" onClick={() => void window.api.exportData(title.replace(/[^\w-]+/g, '_'), result, source)} title="Save the data as an Excel workbook or CSV">
           <Download size={14} />
         </button>
       </div>
@@ -175,7 +175,7 @@ export function ChartView({ spec, result }: { spec: ChartSpec; result: QueryResu
             {chart}
           </ResponsiveContainer>
         ) : (
-          <DataTable result={result} name={title} />
+          <DataTable result={result} name={title} source={source} />
         )}
       </div>
     </div>
