@@ -29,9 +29,15 @@ export interface InvokeApi {
   sapientStatus(): Promise<SapientStatus>
   startSapient(): Promise<SapientStatus>
   stopSapient(): Promise<SapientStatus>
+  /** Download a model with `sapient pull`. Resolves when the download ends. */
+  pullModel(id: string): Promise<SapientStatus>
   /** Save a result as .xlsx or .csv. With `source` the query is re-run in full (results on screen stop at 500 rows). */
   exportData(suggestedName: string, result: QueryResult, source?: ResultSource): Promise<boolean>
   revealFile(path: string): Promise<void>
+  /** Save the debug log (what the app did, no spreadsheet contents) to a file the user can send in. Resolves to the saved path. */
+  exportDebugLog(): Promise<string | null>
+  /** Open the folder that holds the live debug log. */
+  showDebugLog(): Promise<void>
 }
 
 export interface ExelSnapApi extends InvokeApi {
@@ -58,6 +64,9 @@ export const INVOKE_METHODS: (keyof InvokeApi)[] = [
   'sapientStatus',
   'startSapient',
   'stopSapient',
+  'pullModel',
   'exportData',
-  'revealFile'
+  'revealFile',
+  'exportDebugLog',
+  'showDebugLog'
 ]

@@ -1,9 +1,12 @@
 import { join } from 'node:path'
-import { writeFile } from 'node:fs/promises'
+import { release } from 'node:os'
+import { readFile, stat, truncate, writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, screen, session, shell, type MenuItemConstructorOptions } from 'electron'
 import type { InvokeApi } from '@shared/api'
 import type { AppEvent, QueryResult, SapientStatus } from '@shared/types'
 import { ChatService } from './chat'
+import { deviceInfo } from './core/capacity'
+import { configureLog, log, logDirectory, readLog } from './core/log'
 import { SapientManager } from './core/sapient'
 import { resultToCsv, resultToXlsx, SUPPORTED_EXTENSIONS } from './core/workbook'
 import { Store } from './store'
@@ -16,12 +19,38 @@ if (!app.requestSingleInstanceLock()) app.exit(0)
 const isDev = !app.isPackaged && !!process.env.ELECTRON_RENDERER_URL
 let win: BrowserWindow | null = null
 
+configureLog(join(app.getPath('userData'), 'logs'))
+const system = () => ({
+  app: app.getVersion(),
+  packaged: app.isPackaged,
+  electron: process.versions.electron,
+  node: process.versions.node,
+  platform: `${process.platform} ${release()} ${process.arch}`,
+  locale: app.getLocale(),
+  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  ...deviceInfo()
+})
+log.info('app', 'starting', system())
+process.on('uncaughtException', (err) => {
+  log.error('app', 'uncaught exception', err)
+  dialog.showErrorBox('ExelSnap hit an unexpected error', `${err.message}\n\nHelp ▸ Export Debug Log… saves a report you can send in.`)
+})
+process.on('unhandledRejection', (reason) => log.error('app', 'unhandled promise rejection', reason))
+
 const store = new Store(app.getPath('userData'))
+log.info('app', 'settings', store.settings)
+const sapientLog = join(app.getPath('userData'), 'sapient.log')
+// SAPIENT's own output is appended on every start; don't let it grow without bound.
+void stat(sapientLog)
+  .then((s) => (s.size > 5 * 1024 * 1024 ? truncate(sapientLog, 0) : undefined))
+  .catch(() => {})
 const sapient = new SapientManager({
   baseUrl: () => store.settings.baseUrl,
   binaryOverride: () => store.settings.sapientPath,
   preferredModel: () => store.settings.model,
-  logPath: join(app.getPath('userData'), 'sapient.log')
+  backend: () => store.settings.backend,
+  answerSeconds: (model, backend) => store.answerSeconds(model, backend),
+  logPath: sapientLog
 })
 
 function emit(e: AppEvent) {
@@ -52,6 +81,10 @@ async function publishStatus(): Promise<SapientStatus> {
   const s = await sapient.status()
   const key = JSON.stringify(s)
   if (key !== lastStatus) {
+    // Logged only when it changes, so the log shows when the server came up, went away or switched model.
+    if (JSON.stringify({ ...s, models: undefined }) !== JSON.stringify({ ...(lastStatus ? JSON.parse(lastStatus) : {}), models: undefined })) {
+      log.info('sapient', 'status', { state: s.state, managed: s.managed, version: s.version, backend: s.backend, note: s.backendNote, activeModel: s.activeModel, downloaded: s.downloaded, error: s.error, pulling: s.pulling })
+    }
     lastStatus = key
     emit({ type: 'sapient', status: s })
   }
@@ -92,8 +125,17 @@ const handlers: InvokeApi = {
   getSettings: async () => store.settings,
   saveSettings: async (patch) => {
     const s = store.saveSettings(patch)
+    log.info('app', 'settings changed', patch)
     if (patch.theme) nativeTheme.themeSource = s.theme
     sapient.invalidateModels()
+    if (patch.backend) {
+      sapient.backendChanged()
+      // The backend is a start-up option of the server, so a running one has to be restarted.
+      if (sapient.managed) {
+        sapient.stop()
+        void handlers.startSapient()
+      }
+    }
     void publishStatus()
     return s
   },
@@ -110,6 +152,18 @@ const handlers: InvokeApi = {
   },
   stopSapient: async () => {
     sapient.stop()
+    lastStatus = ''
+    return publishStatus()
+  },
+  pullModel: async (id) => {
+    const done = sapient.pull(id)
+    lastStatus = ''
+    void publishStatus()
+    try {
+      await done
+    } catch (err) {
+      dialog.showErrorBox('Download failed', err instanceof Error ? err.message : String(err))
+    }
     lastStatus = ''
     return publishStatus()
   },
@@ -131,11 +185,55 @@ const handlers: InvokeApi = {
       return false
     }
   },
-  revealFile: async (path) => shell.showItemInFolder(path)
+  revealFile: async (path) => shell.showItemInFolder(path),
+  exportDebugLog: () => exportDebugLog(),
+  showDebugLog: async () => {
+    const dir = logDirectory()
+    if (dir) void shell.openPath(dir)
+  }
+}
+
+/**
+ * One text file with everything needed to look into a problem: the computer, the settings, the
+ * model server's state and the app's own log. No spreadsheet contents (see core/log.ts).
+ */
+async function exportDebugLog(): Promise<string | null> {
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')
+  const r = await dialog.showSaveDialog(win!, {
+    title: 'Export Debug Log',
+    defaultPath: join(app.getPath('downloads'), `ExelSnap-debug-${stamp}.log`),
+    filters: [{ name: 'Log', extensions: ['log', 'txt'] }]
+  })
+  if (r.canceled || !r.filePath) return null
+  log.info('app', 'debug log exported')
+  const status = await sapient.status().catch((err) => ({ error: String(err) }))
+  const home = app.getPath('home')
+  const section = (title: string, body: string) => `\n===== ${title} =====\n${body.trimEnd()}\n`
+  const json = (v: unknown) => JSON.stringify(v, null, 2).split(home).join('~')
+  const sapientOut = await readFile(sapientLog, 'utf8').catch(() => '')
+  const text =
+    `ExelSnap debug log, exported ${new Date().toISOString()}\n` +
+    'Contains what the app did: questions asked, the SQL the model wrote, timings and errors. It does not contain spreadsheet rows or query results.\n' +
+    section('System', json(system())) +
+    section('Settings', json(store.settings)) +
+    section('SAPIENT', json(status)) +
+    section('Chats', `${store.list().length} saved`) +
+    section('App log (one JSON object per line)', await readLog()) +
+    section('SAPIENT output (last 200 lines)', sapientOut.split('\n').slice(-200).join('\n').split(home).join('~'))
+  await writeFile(r.filePath, text)
+  shell.showItemInFolder(r.filePath)
+  return r.filePath
 }
 
 for (const [name, fn] of Object.entries(handlers)) {
-  ipcMain.handle(`api:${name}`, (_e, ...args: unknown[]) => (fn as (...a: unknown[]) => unknown)(...args))
+  ipcMain.handle(`api:${name}`, async (_e, ...args: unknown[]) => {
+    try {
+      return await (fn as (...a: unknown[]) => unknown)(...args)
+    } catch (err) {
+      log.error('ipc', name, err)
+      throw err
+    }
+  })
 }
 
 function createWindow() {
@@ -164,6 +262,14 @@ function createWindow() {
     }
   })
   win.once('ready-to-show', () => win?.show())
+  // Problems in the window (the React UI) end up in the same log as the main process.
+  win.webContents.on('console-message', (e) => {
+    if (e.level === 'error') log.error('window', e.message, { source: `${e.sourceId}:${e.lineNumber}` })
+  })
+  win.webContents.on('render-process-gone', (_e, details) => log.error('window', 'renderer process gone', details))
+  win.webContents.on('did-fail-load', (_e, code, description, url) => log.error('window', 'page failed to load', { code, description, url }))
+  win.on('unresponsive', () => log.warn('window', 'unresponsive'))
+  win.on('responsive', () => log.info('window', 'responsive again'))
   // Links in answers open in the browser, never inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) void shell.openExternal(url)
@@ -191,7 +297,14 @@ function buildMenu() {
         { role: 'zoomOut' }
       ]
     },
-    { role: 'windowMenu' }
+    { role: 'windowMenu' },
+    {
+      role: 'help',
+      submenu: [
+        { label: 'Export Debug Log…', click: () => void exportDebugLog().catch((err) => dialog.showErrorBox('Could not export the log', String(err))) },
+        { label: 'Show Log Folder', click: () => void handlers.showDebugLog() }
+      ]
+    }
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
@@ -231,6 +344,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  log.info('app', 'quitting')
   store.flush()
   void chat.shutdown()
   sapient.stop() // only stops a server ExelSnap started itself

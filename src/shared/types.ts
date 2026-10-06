@@ -106,6 +106,27 @@ export interface ConversationSummary {
   updatedAt: number
 }
 
+/** Where SAPIENT runs the model. GPU and hybrid are faster to read long prompts but hold a second copy of the weights. */
+export type Backend = 'cpu' | 'gpu' | 'hybrid'
+
+export interface DeviceInfo {
+  memoryGb: number
+  chip: string
+  cores: number
+}
+
+/** One model and what it costs on this computer with the current backend. */
+export interface ModelAdvice {
+  id: string
+  sizeGb: number // on disk
+  residentGb: number // memory once loaded
+  peakGb: number // memory while loading
+  fit: 'fits' | 'tight' | 'too-large'
+  downloaded: boolean
+  recommended: boolean // the most capable model that fits
+  typicalSeconds?: number // how long an answer has taken on this computer in the current mode, once known
+}
+
 export interface Settings {
   baseUrl: string
   model: string // '' = auto (the most capable downloaded model that fits in memory)
@@ -113,6 +134,7 @@ export interface Settings {
   autoStartSapient: boolean
   sapientPath: string // '' = auto-detect
   theme: 'system' | 'dark' | 'light'
+  backend: Backend
 }
 
 export interface SapientStatus {
@@ -124,6 +146,11 @@ export interface SapientStatus {
   resident: string[] // models loaded in memory
   downloaded: string[] // models in the local cache (`sapient list`)
   activeModel: string // model ExelSnap will use
+  device: DeviceInfo
+  backend: Backend // what the memory estimates below assume
+  backendNote?: string // e.g. the chosen backend isn't in this SAPIENT build
+  models: ModelAdvice[] // downloaded and recommended chat models, smallest first
+  pulling?: string // model being downloaded
   error?: string
 }
 

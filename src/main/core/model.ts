@@ -1,6 +1,7 @@
 import { appendFileSync } from 'node:fs'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { APICallError, streamText, type ModelMessage, type ToolSet } from 'ai'
+import { log } from './log'
 
 /** EXELSNAP_DEBUG_LOG=/path/file.jsonl records every request/response exchanged with the model server. */
 function debugLog(entry: object) {
@@ -123,10 +124,21 @@ export class ModelClient {
         }
       }
     } catch (err) {
-      throw this.wrap(err, opts.signal)
+      const wrapped = this.wrap(err, opts.signal)
+      if (wrapped.kind !== 'aborted') log.error('model', 'request failed', { model: req.model, kind: wrapped.kind, error: wrapped.message, ms: Date.now() - t0, cause: err })
+      throw wrapped
     }
     if (opts.signal?.aborted) throw new ProviderError('Stopped', 'aborted')
     debugLog({ response: { content, toolCalls, finishReason, ms: Date.now() - t0 } })
+    log.info('model', 'turn', {
+      model: req.model,
+      ms: Date.now() - t0,
+      messages: req.messages.length,
+      toolChoice: req.tools ? (req.toolChoice ?? 'auto') : 'no tools',
+      finishReason,
+      textLength: content.length,
+      toolCalls: toolCalls.map((c) => c.name)
+    })
     return { content, toolCalls, finishReason }
   }
 

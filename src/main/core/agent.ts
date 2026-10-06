@@ -1,4 +1,5 @@
 import type { ModelMessage, ToolModelMessage } from 'ai'
+import { log } from './log'
 import { extractTextToolCalls, type ModelClient, type ToolCall } from './model'
 import { TOOLS, TOOL_NAMES, parseArgs, runTool, systemPrompt, type ToolOutcome } from './tools'
 import type { WorkbookSession } from './workbook'
@@ -118,6 +119,7 @@ export async function runAgent(run: AgentRun): Promise<void> {
     } else if (calls.length === 0) {
       const recovered = extractTextToolCalls(text, TOOL_NAMES)
       if (recovered.calls.length) {
+        log.warn('agent', 'tool call was written as text; recovered', { step, tools: recovered.calls.map((c) => c.name) })
         calls = recovered.calls
         text = recovered.text
       } else if (toolsUsed === 0 && session.tables.length > 0) {
@@ -135,6 +137,7 @@ export async function runAgent(run: AgentRun): Promise<void> {
     // Servers that ignore tool_choice get one more chance to look at the data before their answer is accepted.
     if (calls.length === 0 && text && mustQuery && toolsUsed === 0 && !lastStep && groundingRetries < 1) {
       groundingRetries++
+      log.warn('agent', 'answered without querying the data; asking again', { step, answerLength: text.length })
       onEvent({ type: 'step-text', text: '' })
       nudge = true
       continue
@@ -145,6 +148,7 @@ export async function runAgent(run: AgentRun): Promise<void> {
       if (!text) {
         // Small models occasionally emit EOS straight away. Nudge once, then give up loudly.
         if (emptyRetries++ < 1 && !lastStep) {
+          log.warn('agent', 'empty reply; asking again', { step })
           nudge = true
           continue
         }
@@ -180,12 +184,24 @@ export async function runAgent(run: AgentRun): Promise<void> {
         // Small models loop on the same query; tell them to move on instead of re-running it.
         reply(call, 'You already ran exactly this query and have its result above. Do not repeat it — answer the user now.')
         repeats++
+        log.warn('agent', 'model repeated a query', { step, tool: call.name })
         continue
       }
       seen.add(key)
       onEvent({ type: 'tool-start', id: call.id, name: call.name, args })
       const t0 = Date.now()
       const outcome = await runTool(session, call.name, args)
+      // The query text and the shape of the result — never the rows themselves.
+      log[outcome.error ? 'warn' : 'info']('agent', `tool ${call.name}`, {
+        step,
+        args,
+        ms: Date.now() - t0,
+        error: outcome.error,
+        rows: outcome.result?.rowCount,
+        truncated: outcome.result?.truncated,
+        columns: outcome.result?.columns.length,
+        chart: outcome.chart?.type
+      })
       onEvent({ type: 'tool-end', id: call.id, outcome, durationMs: Date.now() - t0 })
       reply(call, outcome.forModel)
       toolsUsed++

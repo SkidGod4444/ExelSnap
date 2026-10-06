@@ -1,9 +1,11 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync, createWriteStream } from 'node:fs'
-import { homedir, totalmem } from 'node:os'
+import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
-import type { SapientStatus } from '@shared/types'
+import type { Backend, SapientStatus } from '@shared/types'
+import { adviseModels, autoModel, deviceInfo, type DownloadedModel } from './capacity'
+import { log } from './log'
 import { ModelClient } from './model'
 
 const exec = promisify(execFile)
@@ -37,37 +39,6 @@ export function openHorizonDefaultModel(): string | null {
   } catch {
     return null
   }
-}
-
-/** Parameter count in billions from a model id ("qwen2.5-7b-q4" → 7); 0 when the id doesn't say (vision/speech models). */
-export function modelSize(id: string): number {
-  const m = /(?:^|[-_/])(\d+(?:\.\d+)?)b(?:$|[-_])/i.exec(id)
-  return m ? Number(m[1]) : 0
-}
-
-export interface DownloadedModel {
-  id: string
-  /** Size of the weights on disk in GB (0 when `sapient list` doesn't say). */
-  gb: number
-}
-
-/**
- * Memory a model takes while it loads, as a multiple of its size on disk. Measured on SAPIENT 0.6.5
- * (Apple M4): the CPU backend peaks at 1.3x (7B q4: 4.8 GB resident, 6.0 GB peak); the default Metal
- * backend holds 2.2x and peaks at 3.4x (3B q4: 4.6 GB resident, up to 7.9 GB peak), which for a 7B
- * model is more than a 16 GB Mac has.
- */
-export const LOAD_FACTOR = { cpu: 1.3, default: 3.4 }
-
-/**
- * The most capable downloaded chat model that loads into half of this computer's memory (the other
- * half is for macOS and everything else that is open). Small models answer fast but skip steps and
- * misread results, so "Auto" should not settle for one when a better one fits.
- */
-export function bestModel(downloaded: DownloadedModel[], loadFactor: number, memoryGb = totalmem() / 2 ** 30): string | null {
-  const needs = (m: DownloadedModel) => (m.gb || modelSize(m.id) * 0.7) * loadFactor
-  const fits = downloaded.filter((m) => modelSize(m.id) > 0 && needs(m) <= memoryGb / 2)
-  return fits.sort((a, b) => modelSize(b.id) - modelSize(a.id))[0]?.id ?? null
 }
 
 /** Parse `sapient list` (downloaded models and their size on disk). */
@@ -122,8 +93,12 @@ export class SapientManager {
   private lastError: string | undefined
   private downloadedCache: { at: number; models: DownloadedModel[] } | null = null
   private versionCache: string | undefined
+  private backendNote: string | undefined
+  private cpuFallback = false // the chosen backend isn't in this SAPIENT build
+  private pulling: string | undefined
+  private stopping: Promise<void> = Promise.resolve()
 
-  constructor(private opts: { baseUrl: () => string; binaryOverride: () => string; preferredModel: () => string; logPath?: string }) {}
+  constructor(private opts: { baseUrl: () => string; binaryOverride: () => string; preferredModel: () => string; backend: () => Backend; answerSeconds?: (model: string, backend: Backend) => number | undefined; logPath?: string }) {}
 
   get managed() {
     return this.child !== null && this.child.exitCode === null
@@ -146,6 +121,12 @@ export class SapientManager {
     } catch {
       online = false
     }
+    // For a server started outside the app the mode can't be read back, so the setting is taken as
+    // what the user started it with (Settings says so).
+    const backend: Backend = this.cpuFallback ? 'cpu' : this.opts.backend()
+    const device = deviceInfo()
+    const advice = adviseModels(models, backend, device.memoryGb)
+    for (const m of advice) m.typicalSeconds = this.opts.answerSeconds?.(m.id, backend)
     return {
       state: online ? 'online' : this.starting ? 'starting' : this.lastError ? 'error' : 'offline',
       baseUrl,
@@ -154,27 +135,70 @@ export class SapientManager {
       managed: this.managed,
       resident,
       downloaded,
-      // A server we did not start runs with SAPIENT's defaults, which need far more memory per model.
-      activeModel: this.resolveModel(resident, models, online && !this.managed ? LOAD_FACTOR.default : LOAD_FACTOR.cpu),
+      activeModel: this.opts.preferredModel() || autoModel(advice) || openHorizonDefaultModel() || resident[0] || FALLBACK_MODEL,
+      device,
+      backend,
+      backendNote: this.backendNote,
+      models: advice,
+      pulling: this.pulling,
       error: online ? undefined : this.lastError
     }
-  }
-
-  resolveModel(resident: string[], downloaded: DownloadedModel[], loadFactor: number): string {
-    return this.opts.preferredModel() || bestModel(downloaded, loadFactor) || openHorizonDefaultModel() || resident[0] || downloaded[0]?.id || FALLBACK_MODEL
   }
 
   invalidateModels() {
     this.downloadedCache = null
   }
 
+  /** The user picked another backend: forget that an earlier one was unavailable. */
+  backendChanged() {
+    this.cpuFallback = false
+    this.backendNote = undefined
+  }
+
+  /** Download a model with `sapient pull`. */
+  async pull(id: string): Promise<void> {
+    const binary = findSapientBinary(this.opts.binaryOverride() || undefined)
+    if (!binary) throw new Error('SAPIENT is not installed.')
+    if (this.pulling) throw new Error(`Already downloading ${this.pulling}.`)
+    this.pulling = id
+    log.info('sapient', 'downloading model', { id })
+    try {
+      await exec(binary, ['pull', id], { timeout: 6 * 60 * 60_000, maxBuffer: 64 << 20 })
+    } catch (err) {
+      log.error('sapient', 'download failed', { id, error: err })
+      throw err
+    } finally {
+      this.pulling = undefined
+      this.invalidateModels()
+    }
+  }
+
   /** Spawn `sapient serve` on the configured port and wait until it answers. Concurrent callers share one startup. */
-  start(): Promise<void> {
+  async start(): Promise<void> {
+    // A start that is still waiting for a server which has since been stopped (the user switched
+    // backend or pressed Stop while it was coming up) is about to fail. Let it, then start afresh
+    // instead of handing that failure to the new caller.
+    if (this.startPromise && !this.managed) await this.startPromise.catch(() => {})
     this.startPromise ??= this.startNow().finally(() => (this.startPromise = null))
     return this.startPromise
   }
 
   private async startNow(): Promise<void> {
+    const wanted = this.cpuFallback ? 'cpu' : this.opts.backend()
+    try {
+      await this.launch(wanted)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      // e.g. "cannot serve with --backend hybrid: this binary was built without GPU (wgpu) support"
+      if (wanted === 'cpu' || !/cannot serve with --backend|built without/i.test(message)) throw err
+      this.cpuFallback = true
+      log.warn('sapient', 'backend not available in this build; falling back to CPU', { wanted, message })
+      this.backendNote = `${wanted === 'gpu' ? 'GPU' : 'Hybrid'} mode isn't available in this SAPIENT build, so it is running on the CPU. (${message.replace(/^SAPIENT exited with code \d+\.\s*/, '').replace(/^✗\s*/, '').slice(0, 220)})`
+      await this.launch('cpu')
+    }
+  }
+
+  private async launch(backend: Backend): Promise<void> {
     const baseUrl = this.opts.baseUrl()
     if (!isLocal(baseUrl)) throw new Error('SAPIENT can only be started automatically for a localhost URL.')
     const binary = findSapientBinary(this.opts.binaryOverride() || undefined)
@@ -183,6 +207,7 @@ export class SapientManager {
     this.starting = true
     this.lastError = undefined
     try {
+      await this.stopping
       const args = [
         'serve',
         '--port', portOf(baseUrl),
@@ -191,27 +216,30 @@ export class SapientManager {
         // SAPIENT keeps the last 3 models in memory by default. Switching model in the menu must free
         // the old one, or a 16 GB Mac runs out of memory.
         '--max-models', '1',
-        // Half the memory of the default Metal backend and no slower for these model sizes (see LOAD_FACTOR).
-        '--backend', 'cpu'
+        '--backend', backend === 'gpu' ? (process.platform === 'darwin' ? 'metal' : 'wgpu') : backend
       ]
+      log.info('sapient', 'starting', { binary, args: args.join(' '), version: this.versionCache })
       const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      const started = Date.now()
       this.child = child
       let tail = ''
-      const log = this.opts.logPath ? createWriteStream(this.opts.logPath, { flags: 'a' }) : null
+      const out = this.opts.logPath ? createWriteStream(this.opts.logPath, { flags: 'a' }) : null
       const onData = (b: Buffer) => {
-        log?.write(b)
+        out?.write(b)
         tail = (tail + b.toString()).slice(-2000)
       }
       child.stdout?.on('data', onData)
       child.stderr?.on('data', onData)
       // Without this a failed spawn (binary not executable, removed mid-run) is an uncaught exception.
       child.on('error', (err) => {
-        log?.end()
+        out?.end()
         if (this.child === child) this.child = null
         this.lastError = `Could not run SAPIENT (${binary}): ${err.message}`
+        log.error('sapient', 'could not be run', { binary, error: err.message })
       })
-      child.on('exit', (code) => {
-        log?.end()
+      child.on('exit', (code, signal) => {
+        log.info('sapient', 'exited', { code, signal, afterMs: Date.now() - started, lastOutput: lastLine(tail) })
+        out?.end()
         if (this.child === child) this.child = null
         if (code && code !== 0) this.lastError = `SAPIENT exited with code ${code}. ${lastLine(tail)}`.trim()
       })
@@ -221,6 +249,7 @@ export class SapientManager {
         if (child.exitCode !== null || this.child !== child) throw new Error(this.lastError ?? 'SAPIENT exited during startup.')
         try {
           await provider.listModels(AbortSignal.timeout(1_000))
+          log.info('sapient', 'ready', { afterMs: Date.now() - started })
           return
         } catch {
           await new Promise((r) => setTimeout(r, 500))
@@ -229,6 +258,7 @@ export class SapientManager {
       throw new Error('SAPIENT did not start within 60 seconds.')
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err)
+      log.error('sapient', 'start failed', { backend, error: this.lastError })
       throw err
     } finally {
       this.starting = false
@@ -236,8 +266,16 @@ export class SapientManager {
   }
 
   stop() {
-    if (this.child && this.child.exitCode === null) this.child.kill()
+    const child = this.child
     this.child = null
+    if (!child || child.exitCode !== null) return
+    // SAPIENT holds a lock file and the port until it has exited; a start right after a stop must wait for that.
+    this.stopping = new Promise<void>((resolve) => {
+      child.once('exit', () => resolve())
+      setTimeout(resolve, 5_000)
+    })
+    log.info('sapient', 'stopping')
+    child.kill()
   }
 }
 

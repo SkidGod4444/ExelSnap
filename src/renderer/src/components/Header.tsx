@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Check, ChevronDown, PanelLeft, Power, Settings, SquarePen } from 'lucide-react'
+import { Check, ChevronDown, Download, LoaderCircle, PanelLeft, Power, Settings, SquarePen } from 'lucide-react'
 import type { SapientStatus } from '@shared/types'
 import { shortModel } from '../lib/format'
 
@@ -10,22 +10,40 @@ interface Props {
   onToggleSidebar: () => void
   onNew: () => void
   onPickModel: (model: string) => void
+  onPullModel: (model: string) => void
   onStartEngine: () => void
   onStopEngine: () => void
   onOpenSettings: () => void
 }
 
-/** Below 7B parameters (or not a chat model): fine for a quick look, unreliable for multi-step analysis. */
-const isSmall = (model: string) => {
-  const size = /(?:^|[-_/])(\d+(?:\.\d+)?)b(?:$|[-_])/i.exec(model)
-  return !size || Number(size[1]) < 7
-}
+const MODE = { cpu: 'CPU', gpu: 'GPU', hybrid: 'Hybrid' } as const
+
+const isSmall = (model: string) => Number(/(?:^|[-_/])(\d+(?:\.\d+)?)b(?:$|[-_])/i.exec(model)?.[1] ?? 0) < 7
+const duration = (seconds: number) => (seconds < 90 ? `${seconds} s` : `${Math.round(seconds / 60)} min`)
 
 export function Header(p: Props) {
   const [open, setOpen] = useState(false)
   const s = p.status
-  const models = [...new Set([...(s?.downloaded ?? []), ...(s?.resident ?? [])])].sort()
+  // Chat models only (vision and speech models are downloaded through the same tool), smallest first.
+  const models = (s?.models ?? []).filter((m) => m.downloaded).map((m) => m.id)
+  if (p.selectedModel && !models.includes(p.selectedModel)) models.push(p.selectedModel)
   const active = s?.activeModel ?? ''
+  const advice = new Map((s?.models ?? []).map((m) => [m.id, m]))
+  // The best model for this computer, when it still has to be downloaded.
+  const suggested = s?.models.find((m) => m.recommended && !m.downloaded)
+
+  const describe = (id: string): string => {
+    const a = advice.get(id)
+    if (!a) return 'On this computer'
+    const memory = `${a.residentGb} GB of memory`
+    // Measured on this computer once the model has answered here; a rough word until then.
+    const speed = a.typicalSeconds ? `about ${duration(a.typicalSeconds)} per answer here` : isSmall(id) ? 'quick' : s!.backend === 'cpu' ? 'slow on the CPU' : ''
+    const facts = [memory, speed].filter(Boolean).join(', ')
+    if (a.fit === 'too-large') return `Too large for this computer in ${MODE[s!.backend]} mode — needs ${a.peakGb} GB to load`
+    if (a.fit === 'tight') return `Tight on this computer · ${memory}, ${a.peakGb} GB while loading`
+    if (a.recommended) return `Recommended: the most reliable that fits · ${facts}`
+    return `Less reliable · ${facts}`
+  }
 
   const pick = (m: string) => {
     p.onPickModel(m)
@@ -57,7 +75,7 @@ export function Header(p: Props) {
               <button className="menu-item" onClick={() => pick('')}>
                 <span className="grow">
                   Auto
-                  <span className="desc">The most capable model on this computer{active ? ` — ${shortModel(active)}` : ''}</span>
+                  <span className="desc">The best downloaded model that fits this computer{active && p.selectedModel === '' ? ` — ${shortModel(active)}` : ''}</span>
                 </span>
                 {p.selectedModel === '' && <Check size={16} className="check" />}
               </button>
@@ -65,19 +83,28 @@ export function Header(p: Props) {
                 <button key={m} className="menu-item" onClick={() => pick(m)}>
                   <span className="grow">
                     {shortModel(m)}
-                    <span className="desc">{isSmall(m) ? 'Small and fast — can skip steps or misread results' : 'On this computer'}</span>
+                    <span className={`desc${advice.get(m)?.fit === 'too-large' ? ' warn' : ''}`}>{describe(m)}</span>
                   </span>
                   {p.selectedModel === m && <Check size={16} className="check" />}
                 </button>
               ))}
-              {models.length > 0 && models.every(isSmall) && (
-                <div className="menu-label" style={{ paddingBottom: 8, lineHeight: 1.5 }}>
-                  For reliable analysis get a 7B model: <code>sapient pull openhorizon/qwen2.5-7b-q4</code> (4.7 GB download, uses about 6 GB of memory)
+              {suggested && (
+                <div className="menu-item static">
+                  <span className="grow">
+                    {shortModel(suggested.id)}
+                    <span className="desc">
+                      Recommended for this computer, not downloaded yet · {suggested.sizeGb} GB download, about {suggested.residentGb} GB of memory
+                    </span>
+                  </span>
+                  <button className="btn" onClick={() => p.onPullModel(suggested.id)} disabled={!!s?.pulling || !s?.binary}>
+                    {s?.pulling === suggested.id ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}
+                    {s?.pulling === suggested.id ? 'Downloading…' : 'Download'}
+                  </button>
                 </div>
               )}
-              {models.length === 0 && (
-                <div className="menu-label" style={{ paddingBottom: 8 }}>
-                  No models found. Pull one with <code>sapient pull openhorizon/qwen2.5-7b-q4</code>
+              {s && (
+                <div className="menu-label" style={{ paddingBottom: 8, lineHeight: 1.5 }}>
+                  This computer: {s.device.memoryGb} GB memory · {s.device.chip} · {MODE[s.backend]} mode
                 </div>
               )}
               <div className="menu-sep" />

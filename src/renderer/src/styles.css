@@ -222,6 +222,10 @@ input, textarea, select { font: inherit; color: inherit; }
 .menu-item.danger { color: var(--danger); }
 .menu-item .grow { flex: 1; min-width: 0; }
 .menu-item .desc { display: block; font-size: 12px; color: var(--text-3); margin-top: 1px; }
+.menu-item .desc.warn { color: var(--danger); }
+.menu-item.static { cursor: default; }
+.menu-item.static:hover { background: none; }
+.menu-item .btn { flex-shrink: 0; height: 30px; }
 .menu-sep { height: 1px; background: var(--border); margin: 6px 4px; }
 .menu-item .check { color: var(--text); }
 .backdrop { position: fixed; inset: 0; z-index: 40; }
@@ -350,7 +354,7 @@ button.file-card:hover { background: var(--bg-hover); }
 .setting:last-child { border-bottom: 0; }
 .setting .label { flex: 1; min-width: 0; }
 .setting .label div:first-child { font-size: 14px; }
-.setting .label .hint { font-size: 12px; color: var(--text-3); margin-top: 2px; line-height: 1.4; word-break: break-all; }
+.setting .label .hint { font-size: 12px; color: var(--text-3); margin-top: 2px; line-height: 1.4; overflow-wrap: anywhere; }
 .setting-section { font-size: 12px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 18px; }
 .field {
   height: 34px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--bg); padding: 0 10px; outline: none; min-width: 0;

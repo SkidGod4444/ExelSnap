@@ -1,6 +1,7 @@
 // Headless agent runner — exercises workbook loading + SAPIENT tool calling without Electron.
 //   npm run build && node out/main/cli.js --file data.xlsx [--model openhorizon/qwen2.5-7b-q4] [--url http://localhost:11435/v1] "question"
 //   node out/main/cli.js --file data.xlsx --schema      (just print what the model would see)
+//   node out/main/cli.js --advise [--ram 8] [--backend cpu|gpu|hybrid] [--have id,id]   (which model suits a computer)
 //   node out/main/cli.js --file data.xlsx --tables      (how each sheet was read, as JSON)
 //   node out/main/cli.js --file data.xlsx --sql "SELECT …" [--export out.xlsx|out.csv]
 import { writeFileSync } from 'node:fs'
@@ -8,7 +9,9 @@ import { parseArgs } from 'node:util'
 import type { ModelMessage } from 'ai'
 import { runAgent } from './core/agent'
 import { ModelClient } from './core/model'
-import { DEFAULT_BASE_URL, FALLBACK_MODEL, openHorizonDefaultModel } from './core/sapient'
+import type { Backend } from '@shared/types'
+import { adviseModels, autoModel, deviceInfo } from './core/capacity'
+import { DEFAULT_BASE_URL, FALLBACK_MODEL, findSapientBinary, listDownloaded, openHorizonDefaultModel } from './core/sapient'
 import { systemPrompt } from './core/tools'
 import { resultToCsv, resultToXlsx, WorkbookSession } from './core/workbook'
 
@@ -23,10 +26,21 @@ async function main() {
       tables: { type: 'boolean' },
       sql: { type: 'string' },
       export: { type: 'string' },
+      advise: { type: 'boolean' },
+      ram: { type: 'string' },
+      backend: { type: 'string' },
+      have: { type: 'string' },
       // Ask several questions in one chat: -q "first" -q "follow-up"
       question: { type: 'string', multiple: true, short: 'q' }
     }
   })
+  if (values.advise) {
+    const binary = findSapientBinary()
+    const downloaded = values.have !== undefined ? values.have.split(',').filter(Boolean).map((id) => ({ id, gb: 0 })) : binary ? await listDownloaded(binary) : []
+    const models = adviseModels(downloaded, (values.backend ?? 'cpu') as Backend, values.ram ? Number(values.ram) : deviceInfo().memoryGb)
+    console.log(JSON.stringify({ device: deviceInfo(), auto: autoModel(models), models }, null, 2))
+    return
+  }
   const session = await WorkbookSession.create()
   for (const f of values.file ?? []) {
     const att = await session.addFile(f)

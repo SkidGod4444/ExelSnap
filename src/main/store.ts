@@ -11,8 +11,12 @@ export const DEFAULT_SETTINGS: Settings = {
   temperature: 0.2,
   autoStartSapient: true,
   sapientPath: '',
-  theme: 'system'
+  theme: 'system',
+  // Half the memory of GPU mode and no slower for the model sizes that fit a laptop (see core/capacity.ts).
+  backend: 'cpu'
 }
+
+const SPEED_KEY = 'stats.answerTime'
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
@@ -55,6 +59,7 @@ export class Store {
   private timers = new Map<string, { timer: NodeJS.Timeout; write: () => void }>()
   private q: Record<'conv' | 'messages' | 'list' | 'putConv' | 'putMessage' | 'touch' | 'delConv' | 'putSetting', StatementSync>
   settings: Settings
+  private speed: Record<string, { ms: number; n: number }> = {}
 
   constructor(root: string) {
     mkdirSync(root, { recursive: true })
@@ -93,7 +98,9 @@ export class Store {
         /* skip a corrupt value */
       }
     }
-    this.settings = { ...DEFAULT_SETTINGS, ...saved }
+    const { [SPEED_KEY]: speed, ...settings } = saved
+    this.speed = (speed as Record<string, { ms: number; n: number }> | undefined) ?? {}
+    this.settings = { ...DEFAULT_SETTINGS, ...settings }
   }
 
   private transaction(fn: () => void) {
@@ -113,6 +120,23 @@ export class Store {
       for (const [key, value] of Object.entries(patch)) this.q.putSetting.run(key, JSON.stringify(value))
     })
     return this.settings
+  }
+
+  /**
+   * How long answers take on this computer, per model and backend (a running average of the last few).
+   * Lets the model menu say "about 40 s per answer here" instead of guessing from the hardware.
+   */
+  recordAnswerTime(model: string, backend: string, ms: number) {
+    const key = `${model}|${backend}`
+    const prev = this.speed[key]
+    const n = Math.min((prev?.n ?? 0) + 1, 8)
+    this.speed[key] = { ms: prev ? prev.ms + (ms - prev.ms) / n : ms, n }
+    this.q.putSetting.run(SPEED_KEY, JSON.stringify(this.speed))
+  }
+
+  answerSeconds(model: string, backend: string): number | undefined {
+    const s = this.speed[`${model}|${backend}`]
+    return s ? Math.round(s.ms / 1000) : undefined
   }
 
   get(id: string): Conversation | undefined {

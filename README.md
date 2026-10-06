@@ -74,6 +74,17 @@ node out/main/cli.js -f samples/sales_demo.xlsx -m openhorizon/qwen2.5-7b-q4 "To
 
 Set `EXELSNAP_DEBUG_LOG=/tmp/exelsnap.jsonl` (app or CLI) to log every request/response sent to SAPIENT.
 
+### Debug log
+
+The app keeps a log of what it does in `<userData>/logs/exelsnap.log` (one JSON object per line, 5 MB, one older
+generation kept): start-up and system details, settings changes, the model server's start/stop/errors, every question,
+the SQL the model wrote, timings, the decisions the agent loop made (retries, recovered tool calls) and every error from
+the main process or the window. It never contains spreadsheet rows or query results, only row and column counts, and
+home-directory paths are shortened to `~`.
+
+**Help ▸ Export Debug Log…** (or Settings ▸ Debug log ▸ Export…) saves one file with the system details, settings,
+SAPIENT's state, that log and the last 200 lines of SAPIENT's own output — the file to ask a user for with a bug report.
+
 ### UI screenshots
 
 `npm run snap` drives the real app (throwaway profile), runs one question through SAPIENT and saves
@@ -120,10 +131,17 @@ Spreadsheets can be opened with ExelSnap from Finder ("Open With") or by droppin
   was restarted. ExelSnap therefore sends one request at a time and starts SAPIENT with
   `--max-concurrency 1`. Worth reporting upstream.
 - 0.5B–3B models can call tools, but they loop, pick odd tools and misread numbers. Use 7B for real work.
-- **Memory.** On the default (Metal) backend a model holds about 2.2× its size on disk and peaks at 3.4× while
-  loading (3B q4: 4.6 GB resident, up to 7.9 GB peak), and the server keeps the last 3 models loaded. Two models on
-  a 16 GB Mac is enough to run it out of memory. ExelSnap therefore starts SAPIENT with `--backend cpu --max-models 1`:
-  1.0× resident, 1.3× peak (7B q4: 4.8–5.2 GB, 6.0 GB peak) and no slower at these sizes. A server you start
-  yourself uses SAPIENT's defaults; Auto then sizes the model for those.
+- **Memory.** Measured on an M4 with 16 GB while answering questions in the app (GB resident / peak):
+  CPU backend 1.5B 1.3 / 1.7, 3B 2.2 / 2.8, 7B 5.2 / 6.0; GPU (Metal) backend 1.5B 6.3, 3B 9.3 / 9.4. The GPU keeps a
+  second copy of the weights and its working memory grows with the prompt; SAPIENT also keeps the last 3 models loaded
+  by default. Loading 7B that way ran the Mac out of memory. ExelSnap therefore starts SAPIENT with `--max-models 1`
+  and on the CPU unless you choose otherwise.
+- **Run models on (Settings): CPU / GPU / Hybrid.** Switching restarts the server. Hybrid (GPU reads the prompt, CPU
+  writes the answer) needs a SAPIENT build with wgpu; if the chosen mode isn't in your build, ExelSnap falls back
+  to CPU and says so. For a server you started yourself, set the mode you started it in.
+- **Which model.** `src/main/core/capacity.ts` estimates each model's memory for the chosen mode. The model menu
+  marks every model as recommended / tight / too large for this computer, offers the recommended one as a download
+  if you don't have it, and Auto uses the best downloaded one that loads into half of memory. A model that is too
+  large is refused instead of loaded. `node out/main/cli.js --advise [--ram 8] [--backend gpu]` prints the same advice.
 - When a spreadsheet is attached the first model turn must call a tool (`tool_choice: required`). Without that,
   small models answer from the few example values in the schema instead of querying the file.

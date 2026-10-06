@@ -278,6 +278,7 @@ export default function App() {
           onToggleSidebar={() => setSidebarOpen(true)}
           onNew={newChat}
           onPickModel={(m) => void updateSettings({ model: m })}
+          onPullModel={(m) => void api.pullModel(m).then(setStatus)}
           onStartEngine={() => void startEngine()}
           onStopEngine={() => void stopEngine()}
           onOpenSettings={() => setShowSettings(true)}

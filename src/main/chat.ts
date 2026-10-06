@@ -2,12 +2,24 @@ import { randomUUID } from 'node:crypto'
 import type { ModelMessage } from 'ai'
 import type { AppEvent, Attachment, ChatMessage, Conversation, PreviewResult, ToolPart } from '@shared/types'
 import { runAgent, type AgentEvent } from './core/agent'
+import { log } from './core/log'
 import { ModelClient, ProviderError } from './core/model'
 import type { SapientManager } from './core/sapient'
 import { WorkbookSession } from './core/workbook'
 import type { Store } from './store'
 
 const now = () => Date.now()
+
+/** What a debug log may say about a spreadsheet: its shape and how it was read, not its contents. */
+function describeFile(a: Attachment) {
+  return {
+    type: a.name.split('.').pop()?.toLowerCase(),
+    bytes: a.size,
+    status: a.status,
+    error: a.error,
+    tables: a.tables.map((t) => ({ rows: t.rowCount, columns: t.columns.map((c) => c.type).join(','), notes: t.notes.length }))
+  }
+}
 
 function titleFrom(text: string): string {
   const t = text.replace(/\s+/g, ' ').trim()
@@ -62,6 +74,7 @@ export class ChatService {
         if (c) {
           for (const a of c.attachments) {
             const loaded = await session.addFile(a.path, a.id)
+            if (loaded.status !== 'ready') log.warn('file', 'could not be reloaded for an existing chat', describeFile(loaded))
             Object.assign(a, { tables: loaded.tables, status: loaded.status, error: loaded.error, size: loaded.size || a.size })
           }
           if (c.attachments.length) {
@@ -87,6 +100,7 @@ export class ChatService {
         continue
       }
       const att = await session.addFile(p)
+      log[att.status === 'ready' ? 'info' : 'warn']('file', 'attached', describeFile(att))
       if (att.status === 'ready') c.attachments.push(att)
       added.push(att)
     }
@@ -219,6 +233,26 @@ export class ChatService {
         this.emit({ type: 'sapient', status })
       }
       msg.model = status.activeModel
+      log.info('chat', 'question', {
+        conversation: c.id,
+        text,
+        model: status.activeModel,
+        modelChosenBy: this.store.settings.model ? 'user' : 'auto',
+        backend: status.backend,
+        serverManaged: status.managed,
+        serverState: status.state,
+        priorMessages: c.history.length,
+        tables: c.attachments.flatMap((a) => a.tables.map((t) => `${t.table} (${t.rowCount} rows, ${t.columns.length} columns)`))
+      })
+      // Loading a model that doesn't fit takes the whole computer down with it; refuse before SAPIENT tries.
+      const cost = status.models.find((m) => m.id === status.activeModel)
+      if (cost?.fit === 'too-large') {
+        const mode = { cpu: 'CPU', gpu: 'GPU', hybrid: 'hybrid' }[status.backend]
+        throw new Error(
+          `${status.activeModel.replace(/^openhorizon\//, '')} needs about ${cost.peakGb} GB of memory to load in ${mode} mode, and this computer has ${status.device.memoryGb} GB. ` +
+            `Pick a smaller model in the model menu${status.backend === 'cpu' ? '' : ', or switch to CPU mode in Settings (about half the memory)'}.`
+        )
+      }
       const session = await this.session(c.id)
       const fileNote = files.length ? `\n\n(I attached ${files.map((f) => `${f.name}, loaded as table ${f.tables.map((t) => t.table).join(', ')}`).join('; ')}.)` : ''
       await runAgent({
@@ -234,6 +268,7 @@ export class ChatService {
         onEvent
       })
       msg.status = ctrl.signal.aborted ? 'stopped' : 'done'
+      if (msg.status === 'done') this.store.recordAnswerTime(status.activeModel, status.backend, now() - t0)
     } catch (err) {
       if (ctrl.signal.aborted || (err instanceof ProviderError && err.kind === 'aborted')) {
         msg.status = 'stopped'
@@ -254,6 +289,13 @@ export class ChatService {
       c.history.push(...out)
       for (const p of msg.parts) if (p.kind === 'tool' && p.status === 'running') p.status = 'error'
       msg.durationMs = now() - t0
+      log[msg.status === 'error' ? 'error' : 'info']('chat', `answer ${msg.status}`, {
+        conversation: c.id,
+        ms: msg.durationMs,
+        error: msg.error,
+        tools: msg.parts.filter((p) => p.kind === 'tool').length,
+        answerLength: msg.parts.reduce((n, p) => n + (p.kind === 'text' ? p.text.length : 0), 0)
+      })
       c.updatedAt = now()
       this.runs.delete(c.id)
       // Unless the chat was deleted while the model was still answering.
