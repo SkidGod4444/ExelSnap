@@ -8,7 +8,8 @@ import {
   PromptInputHeader,
   PromptInputSubmit,
   PromptInputTextarea,
-  PromptInputTools
+  PromptInputTools,
+  usePromptInputAttachments
 } from '@/components/ai-elements/prompt-input'
 import { FileCard, type DraftFile } from './FileCard'
 
@@ -27,6 +28,19 @@ interface Props {
   onAttach: () => void
   onRemoveFile: (id: string) => void
   onOpenFile: (id: string) => void
+}
+
+/**
+ * PromptInput keeps its own list of dropped/pasted File objects and inlines them as data URLs on submit.
+ * Spreadsheets are attached by path through Electron instead (button, window drop, Finder), so discard that list.
+ */
+function DiscardFormFiles() {
+  const attachments = usePromptInputAttachments()
+  const count = attachments.files.length
+  useEffect(() => {
+    if (count > 0) attachments.clear()
+  }, [count, attachments])
+  return null
 }
 
 export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
@@ -59,8 +73,8 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
   const placeholder = dataName ? `Ask anything about ${dataName}` : hasData ? 'Ask anything about your data' : 'Attach a spreadsheet, then ask anything'
 
   return (
-    // Spreadsheets are attached by path through Electron (button, drop, Finder), not through the form's file input.
     <PromptInput className="composer" onSubmit={submit}>
+      <DiscardFormFiles />
       {files.length > 0 && (
         <PromptInputHeader className="composer-files gap-2 px-3 pt-3">
           {files.map((f) => (
