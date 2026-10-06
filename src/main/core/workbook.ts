@@ -471,15 +471,19 @@ export class WorkbookSession {
     // Two-row headers ("2024" spanning "Q1 | Q2"): the lower row alone has blank or repeated names.
     const text = (v: Raw) => (v == null ? '' : v instanceof Date ? fmtDate(v, false) : String(v).trim())
     const names = headerRow.map(text)
-    const group = headerIdx > 0 ? rows[headerIdx - 1] : undefined
-    const grouped = !!group && filled(group).length >= 2 && (names.slice(0, width).some((n) => !n) || new Set(names.filter(Boolean)).size < names.filter(Boolean).length)
+    // The row above only counts as a group row when it settles something: it names a column the header
+    // leaves blank, or tells two same-named columns apart. A "Period: | Q1 2025" line above does neither.
+    const above = headerIdx > 0 ? rows[headerIdx - 1] : undefined
+    const groups: string[] = []
+    for (let c = 0, carry = ''; c < width; c++) groups.push((carry = text(above?.[c] ?? null) || carry))
+    const grouped =
+      !!above &&
+      filled(above).length >= 2 &&
+      names.slice(0, width).some((n, c) => (!n && !!text(above[c] ?? null)) || (!!n && names.some((m, d) => d > c && m === n && groups[d] !== groups[c])))
     if (grouped) {
-      let carry = ''
       for (let c = 0; c < width; c++) {
-        const top = text(group![c] ?? null)
-        if (top) carry = top
-        if (!names[c]) names[c] = top
-        else if (carry && carry !== names[c]) names[c] = `${carry} ${names[c]}`
+        if (!names[c]) names[c] = text(above![c] ?? null)
+        else if (groups[c] && groups[c] !== names[c]) names[c] = `${groups[c]} ${names[c]}`
       }
     }
     if (headerIdx > (grouped ? 1 : 0)) notes.push('Title rows above the header were skipped')

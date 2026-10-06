@@ -31,6 +31,9 @@ export function writeFixtures(dir) {
     ws.D3 = { t: 'n', f: 'B3*C3' } // written by a script: formula without a saved result
   }]]))
 
+  // a metadata line above the header is not a second header row
+  save('metadata_row.xlsx', book([['S', [['Period:', 'Q1 2025'], ['Name', 'Amount', 'Qty', 'Region', ''], ['a', 1, 2, 'N', 'x'], ['b', 3, 4, 'S', 'y']]]]))
+
   const hidden = book([['Data', [['Name', 'Score'], ['x', 1], ['y', 2]]], ['Secret', [['k', 'v'], ['a', 1]]], ['Empty', []]])
   hidden.Workbook = { Sheets: [{ Hidden: 0 }, { Hidden: 1 }, { Hidden: 0 }] }
   save('hidden_empty.xlsx', hidden)

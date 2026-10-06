@@ -122,8 +122,14 @@ const handlers: InvokeApi = {
       ]
     })
     if (r.canceled || !r.filePath) return false
-    await exportTo(r.filePath, source ? await chat.exportQuery(source.conversationId, source.sql) : result)
-    return true
+    try {
+      await exportTo(r.filePath, source ? await chat.exportQuery(source.conversationId, source.sql) : result)
+      return true
+    } catch (err) {
+      // The query is run again for the export, so it can fail after a file name was chosen (e.g. the source file moved).
+      dialog.showErrorBox('Export failed', err instanceof Error ? err.message : String(err))
+      return false
+    }
   },
   revealFile: async (path) => shell.showItemInFolder(path)
 }

@@ -39,6 +39,11 @@ test('merged two-row header becomes one name per column', () => {
   assert.equal(t.rowCount, 2)
 })
 
+test('a metadata line above the header is not merged into the column names', () => {
+  const [t] = tables(fx('metadata_row.xlsx'))
+  assert.deepEqual(t.columns.map((c) => c.header), ['Name', 'Amount', 'Qty', 'Region', '(column 5)'])
+})
+
 test('formula without a saved result is reported, not silently empty', () => {
   const [t] = tables(fx('formulas.xlsx'))
   assert.equal(col(t, 'total').nulls, 1)
