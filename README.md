@@ -50,9 +50,12 @@ npm run dev            # app with hot reload
 npm run sample         # (re)generate samples/sales_demo.xlsx to try it with
 ```
 
-SAPIENT must be installed (`npm i -g openhorizon`, then `openhorizon update`). ExelSnap finds the `sapient`
-binary (PATH, `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) and starts `sapient serve` itself if
-it isn't running. Pull a capable model first:
+SAPIENT comes with the app: `npm run dev` and the Mac build download the engine into `vendor/sapient/`
+(`scripts/fetch-sapient.mjs`, hybrid build, checksum verified). On first start the app copies it to
+`<userData>/engine/` and, **every time it opens**, runs `sapient update` on that copy so the engine stays on the
+latest release. That check is the only time the app uses the network, and it sends none of your data; offline the
+installed version is kept. A path in Settings ▸ SAPIENT binary overrides the bundled engine (and is never
+auto-updated). The first time, download a model from the prompt on the start screen or the model menu, or:
 
 ```bash
 sapient pull openhorizon/qwen2.5-7b-q4      # recommended (4.7 GB on disk, about 6 GB of memory)
@@ -96,8 +99,14 @@ Build on the Mac itself — DuckDB's native binding is installed per platform **
 is built for the Mac you run this on (Apple Silicon → arm64, Intel → x64):
 
 ```bash
-npm ci && npm run dist:mac      # → dist/ExelSnap-*.dmg
+npm ci && npm run dist:mac      # → dist/ExelSnap-*.dmg, ad-hoc signed, for this Mac
+npm run release:mac             # → signed with your Developer ID and notarized, for distribution
 ```
+
+`release:mac` (config in `build/release.cjs`) needs a **Developer ID Application** certificate in the login keychain
+(Xcode ▸ Settings ▸ Accounts ▸ Manage Certificates ▸ + ▸ Developer ID Application) and notarization credentials:
+`xcrun notarytool store-credentials exelsnap --apple-id <id> --team-id <team>` once, then run with
+`APPLE_KEYCHAIN_PROFILE=exelsnap`.
 
 The app is ad-hoc signed (no Apple Developer ID, not notarized). It runs as-is on the Mac that built it.
 On another Mac, Gatekeeper blocks the downloaded copy; clear the quarantine flag once with
@@ -132,10 +141,10 @@ Spreadsheets can be opened with ExelSnap from Finder ("Open With") or by droppin
   `--max-concurrency 1`. Worth reporting upstream.
 - 0.5B–3B models can call tools, but they loop, pick odd tools and misread numbers. Use 7B for real work.
 - **Memory.** Measured on an M4 with 16 GB while answering questions in the app (GB resident / peak):
-  CPU backend 1.5B 1.3 / 1.7, 3B 2.2 / 2.8, 7B 5.2 / 6.0; GPU (Metal) backend 1.5B 6.3, 3B 9.3 / 9.4. The GPU keeps a
-  second copy of the weights and its working memory grows with the prompt; SAPIENT also keeps the last 3 models loaded
-  by default. Loading 7B that way ran the Mac out of memory. ExelSnap therefore starts SAPIENT with `--max-models 1`
-  and on the CPU unless you choose otherwise.
+  CPU 1.5B 1.5 / 1.7, 3B 2.2 / 2.8, 7B 5.2 / 6.0; GPU (wgpu, the bundled build) 1.5B 1.4 / 9.5; hybrid 1.5B 2.7 / 10.0;
+  GPU on the Metal build 1.5B 6.3, 3B 9.3 / 9.4. The GPU modes spike while weights are uploaded, and SAPIENT keeps the
+  last 3 models loaded by default; loading 7B that way ran the Mac out of memory. ExelSnap therefore starts SAPIENT
+  with `--max-models 1` and on the CPU unless you choose otherwise.
 - **Run models on (Settings): CPU / GPU / Hybrid.** Switching restarts the server. Hybrid (GPU reads the prompt, CPU
   writes the answer) needs a SAPIENT build with wgpu; if the chosen mode isn't in your build, ExelSnap falls back
   to CPU and says so. For a server you started yourself, set the mode you started it in.

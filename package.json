@@ -8,16 +8,17 @@
   "license": "UNLICENSED",
   "private": true,
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "node scripts/fetch-sapient.mjs && electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "agent:cli": "electron-vite build && node out/main/cli.js",
-    "dist:mac": "electron-vite build && electron-builder --mac",
-    "dist:linux": "electron-vite build && electron-builder --linux",
+    "dist:mac": "node scripts/fetch-sapient.mjs && electron-vite build && electron-builder --mac",
     "snap": "electron-vite build && electron scripts/snap.cjs snaps",
     "sample": "node scripts/make-sample.mjs",
-    "test": "electron-vite build && node --test tests/"
+    "test": "electron-vite build && node --test tests/",
+    "fetch:sapient": "node scripts/fetch-sapient.mjs",
+    "release:mac": "node scripts/fetch-sapient.mjs --force && electron-vite build && electron-builder --mac --config build/release.cjs"
   },
   "devDependencies": {
     "@streamdown/cjk": "^1.0.4",
@@ -83,12 +84,6 @@
       "darkModeSupport": true,
       "hardenedRuntime": false
     },
-    "linux": {
-      "target": [
-        "AppImage"
-      ],
-      "category": "Office"
-    },
     "fileAssociations": [
       {
         "ext": [
@@ -103,6 +98,12 @@
         "name": "Spreadsheet",
         "role": "Viewer",
         "rank": "Alternate"
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/sapient",
+        "to": "sapient"
       }
     ]
   }

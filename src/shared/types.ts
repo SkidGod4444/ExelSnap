@@ -151,6 +151,8 @@ export interface SapientStatus {
   backendNote?: string // e.g. the chosen backend isn't in this SAPIENT build
   models: ModelAdvice[] // downloaded and recommended chat models, smallest first
   pulling?: string // model being downloaded
+  /** Where the SAPIENT binary comes from: the copy shipped with the app, a path set in Settings, or one installed on the system. */
+  engine: { source: 'bundled' | 'custom' | 'system' | 'none'; updating: boolean; note?: string }
   error?: string
 }
 

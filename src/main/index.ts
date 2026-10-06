@@ -50,7 +50,12 @@ const sapient = new SapientManager({
   preferredModel: () => store.settings.model,
   backend: () => store.settings.backend,
   answerSeconds: (model, backend) => store.answerSeconds(model, backend),
-  logPath: sapientLog
+  logPath: sapientLog,
+  // SAPIENT ships inside the app (see scripts/fetch-sapient.mjs) and keeps itself current from a writable copy.
+  engine: {
+    seed: app.isPackaged ? join(process.resourcesPath, 'sapient', 'sapient') : join(app.getAppPath(), 'vendor', 'sapient', 'sapient'),
+    dir: join(app.getPath('userData'), 'engine')
+  }
 })
 
 function emit(e: AppEvent) {
@@ -328,10 +333,18 @@ app.whenReady().then(async () => {
   }
   createWindow()
 
+  // Bring the bundled SAPIENT up to date before starting it. The window is already usable; if the
+  // check is slow (bad network) the app carries on with the version it has and the update finishes
+  // in the background for the next start.
+  const prepared = sapient.prepareEngine().catch((err) => log.error('sapient', 'engine preparation failed', err))
+  void publishStatus()
+  await Promise.race([prepared, new Promise((r) => setTimeout(r, 20_000))])
+  lastStatus = ''
   const status = await publishStatus()
   if (status.state === 'offline' && store.settings.autoStartSapient && status.binary) {
     void handlers.startSapient()
   }
+  void prepared.then(() => ((lastStatus = ''), publishStatus()))
   setInterval(() => void publishStatus(), 8_000)
 
   app.on('activate', () => {

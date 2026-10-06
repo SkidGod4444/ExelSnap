@@ -28,6 +28,14 @@ const BACKEND_HINT = {
   hybrid: 'Hybrid: the GPU reads the prompt, the CPU writes the answer. Needs a SAPIENT build with GPU support and as much memory as GPU mode.'
 } as const
 
+/** Where the engine comes from and whether it is current. */
+function engineLine(status: SapientStatus): string {
+  const { source, updating, note } = status.engine
+  if (updating) return 'Checking for a SAPIENT update…'
+  const origin = source === 'bundled' ? 'Comes with ExelSnap and updates itself each time the app opens.' : source === 'custom' ? `Custom binary: ${status.binary}` : `Installed on this computer: ${status.binary}`
+  return note ? `${origin} ${note}` : origin
+}
+
 /** Which model suits this computer in the current mode, in one sentence. */
 function modelHint(status: SapientStatus | null): string {
   if (!status) return ''
@@ -68,7 +76,7 @@ export function SettingsDialog({
             {status?.version ? ` · v${status.version}` : ''}
           </div>
           <div className="hint">
-            {status?.error ? status.error : status?.binary ?? 'Install with: npm i -g openhorizon, then run `openhorizon update`.'}
+            {status?.error ? status.error : status?.binary ? engineLine(status) : 'Install with: npm i -g openhorizon, then run `openhorizon update`.'}
           </div>
         </div>
         {status?.state === 'online' ? (
@@ -139,7 +147,7 @@ export function SettingsDialog({
       <div className="setting">
         <div className="label">
           <div>SAPIENT binary</div>
-          <div className="hint">Leave empty to auto-detect.</div>
+          <div className="hint">Leave empty to use the SAPIENT that comes with ExelSnap.</div>
         </div>
         <input
           className="field"

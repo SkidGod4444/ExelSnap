@@ -1,10 +1,11 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync, createWriteStream } from 'node:fs'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { Backend, SapientStatus } from '@shared/types'
-import { adviseModels, autoModel, deviceInfo, type DownloadedModel } from './capacity'
+import { adviseModels, autoModel, deviceInfo, type DownloadedModel, type GpuEngine } from './capacity'
 import { log } from './log'
 import { ModelClient } from './model'
 
@@ -97,8 +98,76 @@ export class SapientManager {
   private cpuFallback = false // the chosen backend isn't in this SAPIENT build
   private pulling: string | undefined
   private stopping: Promise<void> = Promise.resolve()
+  private gpuEngine: GpuEngine | undefined // which GPU flag this binary accepted
+  private engineUpdating = false
+  private engineNote: string | undefined
 
-  constructor(private opts: { baseUrl: () => string; binaryOverride: () => string; preferredModel: () => string; backend: () => Backend; answerSeconds?: (model: string, backend: Backend) => number | undefined; logPath?: string }) {}
+  constructor(
+    private opts: {
+      baseUrl: () => string
+      binaryOverride: () => string
+      preferredModel: () => string
+      backend: () => Backend
+      answerSeconds?: (model: string, backend: Backend) => number | undefined
+      logPath?: string
+      /** The SAPIENT binary shipped with the app, and the writable folder its working copy lives in. */
+      engine?: { seed: string; dir: string }
+    }
+  ) {}
+
+  private get enginePath(): string | null {
+    return this.opts.engine ? join(this.opts.engine.dir, 'sapient') : null
+  }
+
+  /** The binary to run: a path set in Settings, else the app's own copy, else one installed on the system. */
+  private binary(): { path: string | null; source: 'bundled' | 'custom' | 'system' | 'none' } {
+    const override = this.opts.binaryOverride()
+    if (override) return { path: existsSync(override) ? override : null, source: 'custom' }
+    if (this.enginePath && existsSync(this.enginePath)) return { path: this.enginePath, source: 'bundled' }
+    const system = findSapientBinary()
+    return { path: system, source: system ? 'system' : 'none' }
+  }
+
+  /**
+   * Called when the app opens. Installs the bundled SAPIENT into a writable folder (the copy inside
+   * a signed app can't be changed) and lets it update itself to the latest release, so users are
+   * never stuck on the engine version the app was built with. Needs the network only for the
+   * update; offline it simply keeps the version it has.
+   */
+  async prepareEngine(): Promise<void> {
+    const engine = this.opts.engine
+    const path = this.enginePath
+    if (!engine || !path || this.opts.binaryOverride()) return
+    this.engineUpdating = true
+    try {
+      if (existsSync(engine.seed)) {
+        const [have, shipped] = await Promise.all([existsSync(path) ? sapientVersion(path) : undefined, sapientVersion(engine.seed)])
+        if (!have || (shipped && newer(shipped, have))) {
+          await mkdir(engine.dir, { recursive: true })
+          // Written as a new file rather than copied, so no quarantine attribute comes along from the app bundle.
+          await writeFile(path, await readFile(engine.seed))
+          await chmod(path, 0o755)
+          log.info('sapient', 'installed bundled engine', { version: shipped, replaced: have })
+        }
+      }
+      if (!existsSync(path)) return
+      const before = await sapientVersion(path)
+      try {
+        // --hybrid: the build that has all three modes (CPU, GPU, hybrid).
+        const { stdout, stderr } = await exec(path, ['update', '--hybrid'], { timeout: 180_000 })
+        const after = await sapientVersion(path)
+        this.engineNote = after && before && after !== before ? `Updated SAPIENT ${before} → ${after}.` : undefined
+        log.info('sapient', 'update check', { before, after, output: lastLine(`${stdout}\n${stderr}`) })
+      } catch (err) {
+        // Offline, rate-limited, or the download failed: keep what is installed.
+        this.engineNote = `Could not check for a SAPIENT update (using ${before ?? 'the installed version'}).`
+        log.warn('sapient', 'update check failed', { before, error: err })
+      }
+      this.versionCache = undefined
+    } finally {
+      this.engineUpdating = false
+    }
+  }
 
   get managed() {
     return this.child !== null && this.child.exitCode === null
@@ -106,7 +175,7 @@ export class SapientManager {
 
   async status(): Promise<SapientStatus> {
     const baseUrl = this.opts.baseUrl()
-    const binary = findSapientBinary(this.opts.binaryOverride() || undefined)
+    const { path: binary, source } = this.binary()
     if (binary && this.versionCache === undefined) this.versionCache = await sapientVersion(binary)
     if (binary && (!this.downloadedCache || Date.now() - this.downloadedCache.at > 30_000)) {
       this.downloadedCache = { at: Date.now(), models: await listDownloaded(binary) }
@@ -125,7 +194,8 @@ export class SapientManager {
     // what the user started it with (Settings says so).
     const backend: Backend = this.cpuFallback ? 'cpu' : this.opts.backend()
     const device = deviceInfo()
-    const advice = adviseModels(models, backend, device.memoryGb)
+    // The bundled engine is the wgpu build; another binary is assumed to be the Metal build until it shows otherwise.
+    const advice = adviseModels(models, backend, device.memoryGb, this.gpuEngine ?? (source === 'bundled' ? 'wgpu' : 'metal'))
     for (const m of advice) m.typicalSeconds = this.opts.answerSeconds?.(m.id, backend)
     return {
       state: online ? 'online' : this.starting ? 'starting' : this.lastError ? 'error' : 'offline',
@@ -141,6 +211,7 @@ export class SapientManager {
       backendNote: this.backendNote,
       models: advice,
       pulling: this.pulling,
+      engine: { source, updating: this.engineUpdating, note: this.engineNote },
       error: online ? undefined : this.lastError
     }
   }
@@ -157,7 +228,7 @@ export class SapientManager {
 
   /** Download a model with `sapient pull`. */
   async pull(id: string): Promise<void> {
-    const binary = findSapientBinary(this.opts.binaryOverride() || undefined)
+    const binary = this.binary().path
     if (!binary) throw new Error('SAPIENT is not installed.')
     if (this.pulling) throw new Error(`Already downloading ${this.pulling}.`)
     this.pulling = id
@@ -185,23 +256,32 @@ export class SapientManager {
 
   private async startNow(): Promise<void> {
     const wanted = this.cpuFallback ? 'cpu' : this.opts.backend()
-    try {
-      await this.launch(wanted)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      // e.g. "cannot serve with --backend hybrid: this binary was built without GPU (wgpu) support"
-      if (wanted === 'cpu' || !/cannot serve with --backend|built without/i.test(message)) throw err
-      this.cpuFallback = true
-      log.warn('sapient', 'backend not available in this build; falling back to CPU', { wanted, message })
-      this.backendNote = `${wanted === 'gpu' ? 'GPU' : 'Hybrid'} mode isn't available in this SAPIENT build, so it is running on the CPU. (${message.replace(/^SAPIENT exited with code \d+\.\s*/, '').replace(/^✗\s*/, '').slice(0, 220)})`
-      await this.launch('cpu')
+    // "GPU" is wgpu in the hybrid/GPU builds and Metal (MLX) in the Apple-only Metal build.
+    const flags = wanted !== 'gpu' ? [wanted] : this.binary().source === 'bundled' ? ['wgpu'] : process.platform === 'darwin' ? ['metal', 'wgpu'] : ['wgpu']
+    let failure: unknown
+    for (const flag of flags) {
+      try {
+        await this.launch(flag)
+        if (wanted === 'gpu') this.gpuEngine = flag as GpuEngine
+        return
+      } catch (err) {
+        failure = err
+        // e.g. "cannot serve with --backend hybrid: this binary was built without GPU (wgpu) support"
+        if (!/cannot serve with --backend|built without|not available/i.test(err instanceof Error ? err.message : String(err))) throw err
+      }
     }
+    if (wanted === 'cpu') throw failure
+    const message = failure instanceof Error ? failure.message : String(failure)
+    this.cpuFallback = true
+    log.warn('sapient', 'backend not available in this build; falling back to CPU', { wanted, message })
+    this.backendNote = `${wanted === 'gpu' ? 'GPU' : 'Hybrid'} mode isn't available in this SAPIENT build, so it is running on the CPU. (${message.replace(/^SAPIENT exited with code \d+\.\s*/, '').replace(/^✗\s*/, '').slice(0, 220)})`
+    await this.launch('cpu')
   }
 
-  private async launch(backend: Backend): Promise<void> {
+  private async launch(backend: string): Promise<void> {
     const baseUrl = this.opts.baseUrl()
     if (!isLocal(baseUrl)) throw new Error('SAPIENT can only be started automatically for a localhost URL.')
-    const binary = findSapientBinary(this.opts.binaryOverride() || undefined)
+    const binary = this.binary().path
     if (!binary) throw new Error('SAPIENT is not installed. Install it with: npm i -g openhorizon (then run `openhorizon update`).')
     if (this.managed) return
     this.starting = true
@@ -216,7 +296,7 @@ export class SapientManager {
         // SAPIENT keeps the last 3 models in memory by default. Switching model in the menu must free
         // the old one, or a 16 GB Mac runs out of memory.
         '--max-models', '1',
-        '--backend', backend === 'gpu' ? (process.platform === 'darwin' ? 'metal' : 'wgpu') : backend
+        '--backend', backend
       ]
       log.info('sapient', 'starting', { binary, args: args.join(' '), version: this.versionCache })
       const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -277,6 +357,13 @@ export class SapientManager {
     log.info('sapient', 'stopping')
     child.kill()
   }
+}
+
+/** Whether version `a` ("0.7.1") is newer than `b`. */
+function newer(a: string, b: string): boolean {
+  const [x, y] = [a, b].map((v) => v.split(/[.\s-]/).map((n) => parseInt(n, 10) || 0))
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0)
+  return false
 }
 
 function lastLine(s: string): string {

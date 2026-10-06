@@ -239,6 +239,8 @@ export default function App() {
   const dataName = readyDraft[readyDraft.length - 1]?.name ?? conv?.attachments[conv.attachments.length - 1]?.name
   const tables = useMemo(() => [...(conv?.attachments ?? []).flatMap((a) => a.tables)], [conv?.attachments])
   const empty = messages.length === 0
+  // First run: the engine ships with the app, but a model still has to be downloaded once.
+  const firstModel = status?.binary && !status.models.some((m) => m.downloaded) ? status.models.find((m) => m.recommended) : undefined
 
   const composerEl = (
     <Composer
@@ -302,6 +304,17 @@ export default function App() {
                 </Suggestion>
               )}
             </div>
+            {firstModel && (
+              <div className="setup-note">
+                <div>
+                  <strong>One download to get started.</strong> ExelSnap needs a language model on this computer. Best fit for this one ({status!.device.memoryGb} GB of
+                  memory): {firstModel.id.replace(/^openhorizon\//, '')}.
+                </div>
+                <button className="btn primary" onClick={() => void api.pullModel(firstModel.id).then(setStatus)} disabled={!!status!.pulling}>
+                  {status!.pulling ? 'Downloading… this can take a few minutes' : `Download (${firstModel.sizeGb} GB)`}
+                </button>
+              </div>
+            )}
             {tables.length === 0 && (
               <p className="empty-note">
                 <FileSpreadsheet size={14} className="inline align-[-2px]" /> Drop an Excel or CSV file anywhere. It never leaves this computer — SAPIENT runs the model locally and DuckDB
@@ -330,6 +343,12 @@ export default function App() {
             </div>
           </>
         )}
+        <footer className="powered">
+          Powered by{' '}
+          <a href="https://sapient.openhorizon.so/" target="_blank" rel="noreferrer">
+            Sapient from OpenHorizon Labs
+          </a>
+        </footer>
       </main>
 
       {dragging && <DropOverlay />}

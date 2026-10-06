@@ -1,7 +1,7 @@
 // Headless agent runner — exercises workbook loading + SAPIENT tool calling without Electron.
 //   npm run build && node out/main/cli.js --file data.xlsx [--model openhorizon/qwen2.5-7b-q4] [--url http://localhost:11435/v1] "question"
 //   node out/main/cli.js --file data.xlsx --schema      (just print what the model would see)
-//   node out/main/cli.js --advise [--ram 8] [--backend cpu|gpu|hybrid] [--have id,id]   (which model suits a computer)
+//   node out/main/cli.js --advise [--ram 8] [--backend cpu|gpu|hybrid] [--gpu-engine wgpu|metal] [--have id,id]   (which model suits a computer)
 //   node out/main/cli.js --file data.xlsx --tables      (how each sheet was read, as JSON)
 //   node out/main/cli.js --file data.xlsx --sql "SELECT …" [--export out.xlsx|out.csv]
 import { writeFileSync } from 'node:fs'
@@ -30,6 +30,7 @@ async function main() {
       ram: { type: 'string' },
       backend: { type: 'string' },
       have: { type: 'string' },
+      'gpu-engine': { type: 'string' },
       // Ask several questions in one chat: -q "first" -q "follow-up"
       question: { type: 'string', multiple: true, short: 'q' }
     }
@@ -37,7 +38,7 @@ async function main() {
   if (values.advise) {
     const binary = findSapientBinary()
     const downloaded = values.have !== undefined ? values.have.split(',').filter(Boolean).map((id) => ({ id, gb: 0 })) : binary ? await listDownloaded(binary) : []
-    const models = adviseModels(downloaded, (values.backend ?? 'cpu') as Backend, values.ram ? Number(values.ram) : deviceInfo().memoryGb)
+    const models = adviseModels(downloaded, (values.backend ?? 'cpu') as Backend, values.ram ? Number(values.ram) : deviceInfo().memoryGb, values['gpu-engine'] === 'metal' ? 'metal' : 'wgpu')
     console.log(JSON.stringify({ device: deviceInfo(), auto: autoModel(models), models }, null, 2))
     return
   }
