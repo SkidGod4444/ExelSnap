@@ -1,0 +1,167 @@
+import type { ChartSpec, ChartType, QueryResult, TableInfo } from '@shared/types'
+import type { ToolDef } from './provider'
+import type { WorkbookSession } from './workbook'
+
+export const TOOL_DEFS: ToolDef[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'run_sql',
+      description:
+        'Run ONE read-only DuckDB SQL query over the spreadsheet tables and get the result rows. Use it for every number you report. The result is also shown to the user as a table.',
+      parameters: {
+        type: 'object',
+        properties: { sql: { type: 'string', description: 'A single DuckDB SELECT query.' } },
+        required: ['sql']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'make_chart',
+      description:
+        'Draw a chart for the user from a DuckDB SQL query. The query should return one label/date column (x) and one or more numeric columns (y).',
+      parameters: {
+        type: 'object',
+        properties: {
+          sql: { type: 'string', description: 'DuckDB SELECT query producing the chart data.' },
+          type: { type: 'string', enum: ['bar', 'line', 'area', 'pie', 'scatter'] },
+          x: { type: 'string', description: 'Result column for the x axis / pie labels.' },
+          y: { type: 'array', items: { type: 'string' }, description: 'Numeric result column(s) to plot.' },
+          title: { type: 'string' }
+        },
+        required: ['sql', 'type']
+      }
+    }
+  }
+]
+
+export const TOOL_NAMES = TOOL_DEFS.map((t) => t.function.name)
+
+const MODEL_ROWS = 40 // rows of each result the model gets to read
+const UI_ROWS = 500 // rows the user gets to see
+
+export interface ToolOutcome {
+  /** Text sent back to the model as the tool message. */
+  forModel: string
+  result?: QueryResult
+  chart?: ChartSpec
+  error?: string
+}
+
+export function parseArgs(name: string, raw: string): Record<string, unknown> {
+  const s = raw.trim()
+  if (!s) return {}
+  try {
+    const v = JSON.parse(s)
+    return v && typeof v === 'object' ? v : { value: v }
+  } catch {
+    // Models occasionally pass bare SQL instead of JSON.
+    if (name === 'run_sql' || name === 'make_chart') return { sql: s }
+    return { raw: s }
+  }
+}
+
+function fmtCell(v: unknown): string {
+  if (v === null || v === undefined) return 'NULL'
+  if (typeof v === 'number') return v.toLocaleString('en-US', { maximumFractionDigits: 4 })
+  const s = String(v)
+  return s.length > 60 ? s.slice(0, 57) + '…' : s
+}
+
+export function resultForModel(r: QueryResult): string {
+  if (r.rowCount === 0) return 'The query returned 0 rows.'
+  const lines = [r.columns.join(' | ')]
+  for (const row of r.rows.slice(0, MODEL_ROWS)) lines.push(row.map(fmtCell).join(' | '))
+  const shown = Math.min(r.rowCount, MODEL_ROWS)
+  const more = r.truncated ? `more than ${r.rowCount}` : String(r.rowCount)
+  lines.push(shown < r.rowCount || r.truncated ? `(${more} rows; first ${shown} shown — aggregate if you need all of them)` : `(${r.rowCount} row${r.rowCount === 1 ? '' : 's'})`)
+  return lines.join('\n')
+}
+
+const NUMERIC_TYPE = /INT|DOUBLE|FLOAT|DECIMAL|REAL|NUMERIC|HUGEINT/i
+
+function pickChart(args: Record<string, unknown>, r: QueryResult): ChartSpec {
+  const type = (['bar', 'line', 'area', 'pie', 'scatter'] as ChartType[]).includes(args.type as ChartType)
+    ? (args.type as ChartType)
+    : 'bar'
+  const find = (name: unknown) => r.columns.find((c) => c.toLowerCase() === String(name ?? '').toLowerCase())
+  const numeric = r.columns.filter((_, i) => NUMERIC_TYPE.test(r.types[i]))
+  const x = find(args.x) ?? r.columns.find((c) => !numeric.includes(c)) ?? r.columns[0]
+  const yArg = Array.isArray(args.y) ? args.y : args.y != null ? [args.y] : []
+  let y = yArg.map(find).filter((c): c is string => !!c && c !== x)
+  if (y.length === 0) y = numeric.filter((c) => c !== x)
+  if (y.length === 0) throw new Error(`The chart query needs at least one numeric column. Got columns: ${r.columns.join(', ')}`)
+  return { type, x, y: type === 'pie' ? y.slice(0, 1) : y.slice(0, 8), title: typeof args.title === 'string' ? args.title : undefined }
+}
+
+export async function runTool(session: WorkbookSession, name: string, args: Record<string, unknown>): Promise<ToolOutcome> {
+  try {
+    if (session.tables.length === 0) throw new Error('No spreadsheet is attached yet. Ask the user to attach one.')
+    switch (name) {
+      case 'run_sql': {
+        const result = await session.query(String(args.sql ?? ''), UI_ROWS)
+        return { forModel: resultForModel(result), result }
+      }
+      case 'make_chart': {
+        const result = await session.query(String(args.sql ?? ''), UI_ROWS)
+        const chart = pickChart(args, result)
+        return {
+          forModel: `Chart shown to the user (${chart.type}: ${chart.y.join(', ')} by ${chart.x}). Data:\n${resultForModel(result)}`,
+          result,
+          chart
+        }
+      }
+      default:
+        throw new Error(`Unknown tool "${name}". Available tools: ${TOOL_NAMES.join(', ')}`)
+    }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    return { forModel: `ERROR: ${error}\nFix the query and call the tool again.`, error }
+  }
+}
+
+// ---------------------------------------------------------------- system prompt
+
+export function schemaText(tables: TableInfo[]): string {
+  return tables
+    .map((t) => {
+      const head = `TABLE "${t.table}" — ${t.rowCount.toLocaleString('en-US')} rows (file ${t.file}, sheet "${t.sheet}")`
+      const cols = t.columns.map((c) => {
+        let line = `  "${c.name}" ${c.type}`
+        if (c.header && c.header !== c.name) line += `  [header: "${c.header}"]`
+        if (c.type === 'VARCHAR' || c.type === 'BOOLEAN') {
+          const many = c.distinct >= 1000 ? '1000+' : String(c.distinct)
+          line += `  ${many} distinct, e.g. ${c.samples.slice(0, 5).map((s) => JSON.stringify(s)).join(', ')}`
+        } else if (c.min !== undefined) {
+          line += `  range ${c.min} … ${c.max}`
+        }
+        if (c.nulls > 0) line += `  (${c.nulls} empty)`
+        return line
+      })
+      const notes = t.notes.map((n) => `  note: ${n}`)
+      return [head, ...cols, ...notes].join('\n')
+    })
+    .join('\n\n')
+}
+
+export function systemPrompt(tables: TableInfo[]): string {
+  const today = new Date().toISOString().slice(0, 10)
+  const data =
+    tables.length > 0
+      ? `The user's spreadsheets are loaded as DuckDB tables:\n\n${schemaText(tables)}`
+      : 'No spreadsheet is attached yet. If the user asks about data, tell them to attach an Excel or CSV file with the + button or by dragging it into the window.'
+  return `You are ExelSnap, a careful data analyst that answers questions about the user's spreadsheets. Everything runs offline on the user's computer. Today is ${today}.
+
+${data}
+
+How to work:
+- Never guess or invent numbers. Get every number from the run_sql tool, then copy it exactly from the result.
+- Use only the tables and columns listed above. Wrap column names in double quotes.
+- Each run_sql call takes ONE DuckDB SELECT query. Prefer aggregates (SUM, AVG, COUNT, GROUP BY, ORDER BY … LIMIT) over selecting raw rows.
+- Dates: use date_trunc('month', "col"), strftime, EXTRACT(year FROM "col").
+- If a query fails, read the error, fix the query and try again.
+- Use make_chart when the user asks for a chart, plot or graph, or when a trend over time is clearer as a picture.
+- Query results are already shown to the user as tables, so do not repeat the whole table. Answer in a few sentences of Markdown with the key numbers in **bold**.`
+}
