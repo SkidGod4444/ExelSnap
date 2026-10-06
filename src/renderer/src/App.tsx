@@ -317,7 +317,7 @@ export default function App() {
                   m.role === 'user' ? (
                     <UserMessage key={m.id} message={m} onOpenFile={openAttachment} />
                   ) : (
-                    <AssistantMessage key={m.id} message={m} isLast={i === messages.length - 1} onRetry={retry} onStartEngine={() => void startEngine()} />
+                    <AssistantMessage key={m.id} message={m} conversationId={conv!.id} isLast={i === messages.length - 1} onRetry={retry} onStartEngine={() => void startEngine()} />
                   )
                 )}
               </ConversationContent>

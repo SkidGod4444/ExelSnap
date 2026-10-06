@@ -45,9 +45,10 @@ const stripImages = (md: string) => md.replace(/!\[[^\]]*\]\([^)]*\)/g, '')
 
 const TOOL_STATE = { running: 'input-available', done: 'output-available', error: 'output-error' } as const
 
-function ToolStep({ part, defaultOpen }: { part: ToolPart; defaultOpen: boolean }) {
+function ToolStep({ part, defaultOpen, conversationId }: { part: ToolPart; defaultOpen: boolean; conversationId: string }) {
   const [open, setOpen] = useState(false)
   const sql = typeof part.args.sql === 'string' ? part.args.sql : JSON.stringify(part.args, null, 2)
+  const source = typeof part.args.sql === 'string' ? { conversationId, sql: part.args.sql } : undefined
   const showResult = part.status === 'done' && part.result && !part.chart && (defaultOpen || open)
   return (
     <div className="tool-step flex flex-col gap-2">
@@ -65,19 +66,21 @@ function ToolStep({ part, defaultOpen }: { part: ToolPart; defaultOpen: boolean 
           </CodeBlock>
         </ToolContent>
       </Tool>
-      {showResult && <DataTable result={part.result!} />}
-      {part.chart && part.result && <ChartView spec={part.chart} result={part.result} />}
+      {showResult && <DataTable result={part.result!} source={source} />}
+      {part.chart && part.result && <ChartView spec={part.chart} result={part.result} source={source} />}
     </div>
   )
 }
 
 export const AssistantMessage = memo(function AssistantMessage({
   message,
+  conversationId,
   isLast,
   onRetry,
   onStartEngine
 }: {
   message: ChatMessage
+  conversationId: string
   isLast: boolean
   onRetry: () => void
   onStartEngine: () => void
@@ -103,7 +106,7 @@ export const AssistantMessage = memo(function AssistantMessage({
               </MessageResponse>
             ) : null
           ) : (
-            <ToolStep key={p.id} part={p} defaultOpen={p.id === lastResultId} />
+            <ToolStep key={p.id} part={p} defaultOpen={p.id === lastResultId} conversationId={conversationId} />
           )
         )}
 

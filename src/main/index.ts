@@ -5,7 +5,7 @@ import type { InvokeApi } from '@shared/api'
 import type { AppEvent, QueryResult, SapientStatus } from '@shared/types'
 import { ChatService } from './chat'
 import { SapientManager } from './core/sapient'
-import { SUPPORTED_EXTENSIONS } from './core/workbook'
+import { resultToCsv, resultToXlsx, SUPPORTED_EXTENSIONS } from './core/workbook'
 import { Store } from './store'
 
 // Before anything reads userData, so dev and packaged runs share one profile folder.
@@ -58,13 +58,8 @@ async function publishStatus(): Promise<SapientStatus> {
   return s
 }
 
-function csv(result: QueryResult): string {
-  const esc = (v: unknown) => {
-    if (v === null || v === undefined) return ''
-    const s = String(v)
-    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-  }
-  return [result.columns.map(esc).join(','), ...result.rows.map((r) => r.map(esc).join(','))].join('\n')
+function exportTo(path: string, result: QueryResult): Promise<void> {
+  return writeFile(path, /\.csv$/i.test(path) ? resultToCsv(result) : resultToXlsx(result))
 }
 
 const handlers: InvokeApi = {
@@ -118,10 +113,16 @@ const handlers: InvokeApi = {
     lastStatus = ''
     return publishStatus()
   },
-  exportCsv: async (name, result) => {
-    const r = await dialog.showSaveDialog(win!, { defaultPath: `${name}.csv`, filters: [{ name: 'CSV', extensions: ['csv'] }] })
+  exportData: async (name, result, source) => {
+    const r = await dialog.showSaveDialog(win!, {
+      defaultPath: `${name}.xlsx`,
+      filters: [
+        { name: 'Excel workbook', extensions: ['xlsx'] },
+        { name: 'CSV', extensions: ['csv'] }
+      ]
+    })
     if (r.canceled || !r.filePath) return false
-    await writeFile(r.filePath, csv(result))
+    await exportTo(r.filePath, source ? await chat.exportQuery(source.conversationId, source.sql) : result)
     return true
   },
   revealFile: async (path) => shell.showItemInFolder(path)

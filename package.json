@@ -16,7 +16,8 @@
     "dist:mac": "electron-vite build && electron-builder --mac",
     "dist:linux": "electron-vite build && electron-builder --linux",
     "snap": "electron-vite build && electron scripts/snap.cjs snaps",
-    "sample": "node scripts/make-sample.mjs"
+    "sample": "node scripts/make-sample.mjs",
+    "test": "electron-vite build && node --test tests/"
   },
   "devDependencies": {
     "@streamdown/cjk": "^1.0.4",

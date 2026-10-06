@@ -202,7 +202,7 @@ export function PreviewDialog({ conversationId, attachment, onClose }: { convers
             <LoaderCircle size={14} className="spin" /> Loading…
           </div>
         )}
-        {data && <DataTable result={data.result} name={table} tall showTypes />}
+        {data && <DataTable result={data.result} name={table} tall showTypes source={{ conversationId, sql: `SELECT * FROM "${table}"` }} />}
       </div>
     </Dialog>
   )

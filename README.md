@@ -16,6 +16,32 @@ The model never sees the spreadsheet itself — only a compact schema (column na
 values) plus the results of the queries it asks for. Every number in an answer comes from a DuckDB query
 whose result table is shown right under it.
 
+## What it reads
+
+`.xlsx` `.xlsm` `.xlsb` `.xls` `.ods` `.csv` `.tsv`, several files per chat (they can be joined in one query).
+
+| In the file | What happens |
+|---|---|
+| Title rows above the header, tables that start at C5 | Header row is found; title rows are skipped |
+| Merged cells, two-row headers ("2024" over "Q1 \| Q2") | Merged values are filled in; columns become `2024 Q1`, `2024 Q2` |
+| Several tables stacked on one sheet | Each becomes its own table |
+| Total / subtotal rows | Left out when the row is labelled "… total" **and** its number equals the sum of the rows above; named in the table's notes |
+| Footer lines ("Source: …") | Left out and named in the notes |
+| Numbers typed as text: `1,234.50`, `(250)`, `12.5%`, `€ 99`, `1.234,56` | Read as numbers; decimal comma is decided per column |
+| Codes: `00123`, 16-digit card numbers | Stay text (leading zeros and digits are kept) |
+| Dates typed as text: `2025-01-31`, `31/01/2025`, `31.01.2025` | Become real dates; if day/month order can't be told, the column stays text and the model is told how to convert it |
+| `N/A`, `-`, `#DIV/0!`, `#REF!` | Empty |
+| Hidden sheets, formulas without a saved result | Loaded, with a note the model sees |
+| Sheet or column names that are SQL words, start with a digit, or use non-Latin scripts | Renamed safely (`select_`, `c_123`) or kept quoted (`"数据"`) |
+
+Every result table and chart has **Export**: the query is run again in full (not just the 500 rows on screen) and
+saved as an Excel workbook or CSV, with numbers and dates as real cell values.
+
+Not supported: recalculating formulas (saved results are used), editing the original workbook in place,
+tables placed side by side on one sheet, password-protected files, charts/pivot tables/macros inside the file.
+
+`npm test` builds the app and checks all of the above against generated workbooks (`tests/`).
+
 ## Run it
 
 ```bash
@@ -39,7 +65,9 @@ then pick it from the model menu (top left).
 ```bash
 npm run build
 node out/main/cli.js -f samples/sales_demo.xlsx --schema                # what the model sees
+node out/main/cli.js -f samples/sales_demo.xlsx --tables                # how each sheet was read (JSON)
 node out/main/cli.js -f samples/sales_demo.xlsx --sql "SUMMARIZE sales"  # run SQL directly
+node out/main/cli.js -f a.xlsx --sql "SELECT …" --export out.xlsx        # save a full result (.xlsx or .csv)
 node out/main/cli.js -f samples/sales_demo.xlsx -m openhorizon/qwen2.5-7b-q4 "Top 3 products by revenue?"
 ```
 
@@ -70,7 +98,7 @@ Spreadsheets can be opened with ExelSnap from Finder ("Open With") or by droppin
 
 | Path | What |
 |---|---|
-| `src/main/core/workbook.ts` | Parses xlsx/xls/csv/ods (SheetJS), detects header rows, drops "Total" rows, infers column types, loads DuckDB, locks it down |
+| `src/main/core/workbook.ts` | Parses spreadsheets (SheetJS), finds tables and headers, infers column types (see "What it reads"), loads DuckDB and locks it down, exports results |
 | `src/main/core/sql.ts` | Read-only guard for model-written SQL (DuckDB also has file access + config changes disabled) |
 | `src/main/core/model.ts` | Model client on the Vercel AI SDK (`ai` + `@ai-sdk/openai-compatible`), recovery of tool calls written as text, request serialization |
 | `src/main/core/agent.ts` | Tool loop: model → tools → results → model; loop/empty-reply guards |

@@ -112,6 +112,10 @@ export class ChatService {
     return { table, result: await session.preview(table, 200) }
   }
 
+  async exportQuery(convId: string, sql: string) {
+    return (await this.session(convId)).queryAll(sql)
+  }
+
   rename(convId: string, title: string) {
     const c = this.conv(convId)
     c.title = title.trim() || c.title

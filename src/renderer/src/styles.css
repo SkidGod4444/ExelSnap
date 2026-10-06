@@ -239,6 +239,7 @@ input, textarea, select { font: inherit; color: inherit; }
    
 
 /* data table card */
+.tool-error { font-family: var(--mono); font-size: 12.5px; color: var(--danger); background: var(--danger-bg); padding: 10px 12px; border-radius: 10px; white-space: pre-wrap; }
 .data-card { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--bg); margin-top: 8px; }
 .data-scroll { max-height: 340px; overflow: auto; }
 .data-scroll.tall { max-height: 60vh; }

@@ -5,6 +5,7 @@ import type {
   ConversationSummary,
   PreviewResult,
   QueryResult,
+  ResultSource,
   SapientStatus,
   Settings
 } from './types'
@@ -28,7 +29,8 @@ export interface InvokeApi {
   sapientStatus(): Promise<SapientStatus>
   startSapient(): Promise<SapientStatus>
   stopSapient(): Promise<SapientStatus>
-  exportCsv(suggestedName: string, result: QueryResult): Promise<boolean>
+  /** Save a result as .xlsx or .csv. With `source` the query is re-run in full (results on screen stop at 500 rows). */
+  exportData(suggestedName: string, result: QueryResult, source?: ResultSource): Promise<boolean>
   revealFile(path: string): Promise<void>
 }
 
@@ -56,6 +58,6 @@ export const INVOKE_METHODS: (keyof InvokeApi)[] = [
   'sapientStatus',
   'startSapient',
   'stopSapient',
-  'exportCsv',
+  'exportData',
   'revealFile'
 ]

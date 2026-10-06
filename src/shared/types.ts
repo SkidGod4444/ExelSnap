@@ -43,6 +43,12 @@ export interface QueryResult {
   truncated: boolean // more rows existed than the cap
 }
 
+/** Where a result came from, so an export can re-run it without the on-screen row cap. */
+export interface ResultSource {
+  conversationId: string
+  sql: string
+}
+
 export type ChartType = 'bar' | 'line' | 'area' | 'pie' | 'scatter'
 
 export interface ChartSpec {

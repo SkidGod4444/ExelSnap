@@ -112,11 +112,14 @@ export async function runTool(session: WorkbookSession, name: string, args: Reco
 
 // ---------------------------------------------------------------- system prompt
 
+const DETAILED_COLUMNS = 60
+const LISTED_COLUMNS = 200
+
 export function schemaText(tables: TableInfo[]): string {
   return tables
     .map((t) => {
       const head = `TABLE "${t.table}" — ${t.rowCount.toLocaleString('en-US')} rows (file ${t.file}, sheet "${t.sheet}")`
-      const cols = t.columns.map((c) => {
+      const cols = t.columns.slice(0, DETAILED_COLUMNS).map((c) => {
         let line = `  "${c.name}" ${c.type}`
         if (c.header && c.header !== c.name) line += `  [header: "${c.header}"]`
         if (c.type === 'VARCHAR' || c.type === 'BOOLEAN') {
@@ -128,6 +131,12 @@ export function schemaText(tables: TableInfo[]): string {
         if (c.nulls > 0) line += `  (${c.nulls} empty)`
         return line
       })
+      // Very wide sheets would fill a small model's context: the rest are listed by name and type only.
+      const rest = t.columns.slice(DETAILED_COLUMNS)
+      if (rest.length) {
+        const listed = rest.slice(0, LISTED_COLUMNS).map((c) => `"${c.name}" ${c.type}`).join(', ')
+        cols.push(`  … and ${rest.length} more columns: ${listed}${rest.length > LISTED_COLUMNS ? ', … (run DESCRIBE to see all)' : ''}`)
+      }
       const notes = t.notes.map((n) => `  note: ${n}`)
       return [head, ...cols, ...notes].join('\n')
     })
@@ -150,6 +159,7 @@ How to work:
 - Use only the tables and columns listed above. Wrap column names in double quotes.
 - Each run_sql call takes ONE DuckDB SELECT query. Prefer aggregates (SUM, AVG, COUNT, GROUP BY, ORDER BY … LIMIT) over selecting raw rows.
 - Dates: use date_trunc('month', "col"), strftime, EXTRACT(year FROM "col").
+- A VARCHAR column that holds numbers or dates mixed with text: convert with TRY_CAST("col" AS DOUBLE) or try_strptime("col", '%d/%m/%Y').
 - If a query fails, read the error, fix the query and try again.
 - Use make_chart when the user asks for a chart, plot or graph, or when a trend over time is clearer as a picture.
 - Query results are already shown to the user as tables, so do not repeat the whole table. Answer in a few sentences of Markdown with the key numbers in **bold**.`

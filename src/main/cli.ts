@@ -1,13 +1,16 @@
 // Headless agent runner — exercises workbook loading + SAPIENT tool calling without Electron.
 //   npm run build && node out/main/cli.js --file data.xlsx [--model openhorizon/qwen2.5-7b-q4] [--url http://localhost:11435/v1] "question"
 //   node out/main/cli.js --file data.xlsx --schema      (just print what the model would see)
+//   node out/main/cli.js --file data.xlsx --tables      (how each sheet was read, as JSON)
+//   node out/main/cli.js --file data.xlsx --sql "SELECT …" [--export out.xlsx|out.csv]
+import { writeFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import type { ModelMessage } from 'ai'
 import { runAgent } from './core/agent'
 import { ModelClient } from './core/model'
 import { DEFAULT_BASE_URL, FALLBACK_MODEL, openHorizonDefaultModel } from './core/sapient'
 import { systemPrompt } from './core/tools'
-import { WorkbookSession } from './core/workbook'
+import { resultToCsv, resultToXlsx, WorkbookSession } from './core/workbook'
 
 async function main() {
   const { values, positionals } = parseArgs({
@@ -17,7 +20,9 @@ async function main() {
       model: { type: 'string', short: 'm' },
       url: { type: 'string' },
       schema: { type: 'boolean' },
-      sql: { type: 'string' }
+      tables: { type: 'boolean' },
+      sql: { type: 'string' },
+      export: { type: 'string' }
     }
   })
   const session = await WorkbookSession.create()
@@ -28,6 +33,16 @@ async function main() {
   }
   if (values.schema) {
     console.log(systemPrompt(session.tables))
+    return
+  }
+  if (values.tables) {
+    console.log(JSON.stringify(session.tables, null, 2))
+    return
+  }
+  if (values.sql && values.export) {
+    const result = await session.queryAll(values.sql)
+    writeFileSync(values.export, /\.csv$/i.test(values.export) ? resultToCsv(result) : resultToXlsx(result))
+    console.error(`wrote ${result.rowCount} rows to ${values.export}`)
     return
   }
   if (values.sql) {
