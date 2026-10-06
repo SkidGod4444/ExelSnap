@@ -2,12 +2,14 @@
 
 Chat with your spreadsheets, fully offline. A ChatGPT-style desktop app (Electron + React) where a local
 model served by **OpenHorizon SAPIENT** answers questions about Excel/CSV files by querying them with **DuckDB**.
+Model calls go through the **Vercel AI SDK**, the chat UI is built from **AI Elements**, and chats are stored in **SQLite**.
 
 ```
-React renderer ──(contextBridge IPC)──▶ Electron main ──▶ agent loop ──▶ SAPIENT  (localhost:11435, OpenAI API)
+React renderer ──(contextBridge IPC)──▶ Electron main ──▶ agent loop ──▶ SAPIENT  (localhost:11435, via AI SDK)
                                              │                 │
                                              │                 └──▶ tools: run_sql, make_chart
-                                             └──▶ WorkbookSession: SheetJS → typed DuckDB tables (in-memory, sandboxed)
+                                             ├──▶ WorkbookSession: SheetJS → typed DuckDB tables (in-memory, sandboxed)
+                                             └──▶ Store: chats + settings in SQLite (userData/exelsnap.db)
 ```
 
 The model never sees the spreadsheet itself — only a compact schema (column names, types, ranges, top
@@ -70,12 +72,15 @@ Spreadsheets can be opened with ExelSnap from Finder ("Open With") or by droppin
 |---|---|
 | `src/main/core/workbook.ts` | Parses xlsx/xls/csv/ods (SheetJS), detects header rows, drops "Total" rows, infers column types, loads DuckDB, locks it down |
 | `src/main/core/sql.ts` | Read-only guard for model-written SQL (DuckDB also has file access + config changes disabled) |
-| `src/main/core/provider.ts` | OpenAI-compatible client (SSE), recovery of tool calls written as text, request serialization |
+| `src/main/core/model.ts` | Model client on the Vercel AI SDK (`ai` + `@ai-sdk/openai-compatible`), recovery of tool calls written as text, request serialization |
 | `src/main/core/agent.ts` | Tool loop: model → tools → results → model; loop/empty-reply guards |
-| `src/main/core/tools.ts` | `run_sql`, `make_chart` and the system prompt (schema summary) |
+| `src/main/core/tools.ts` | `run_sql`, `make_chart` (AI SDK tools with zod schemas) and the system prompt (schema summary) |
 | `src/main/core/sapient.ts` | Finds/starts/stops `sapient serve`, lists models |
-| `src/main/chat.ts`, `store.ts` | Conversations, per-chat DuckDB sessions, persistence in the app's userData folder |
+| `src/main/chat.ts` | Conversations, per-chat DuckDB sessions, agent runs |
+| `src/main/store.ts` | SQLite persistence (`node:sqlite`, WAL): one row per chat and per message. Imports the JSON files of older versions once and keeps them as `*.imported` |
 | `src/renderer/src` | The ChatGPT-style UI |
+| `src/renderer/src/components/ai-elements` | [AI Elements](https://elements.ai-sdk.dev) (conversation, message, prompt input, tool, code block), installed as source with `npx shadcn add @ai-elements/<name>` |
+| `src/renderer/src/components/ui`, `styles/tailwind.css` | shadcn/ui primitives and the Tailwind theme that maps their tokens onto the app palette |
 
 ## Known SAPIENT behaviour (v0.6.5)
 

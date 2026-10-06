@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ChartLine, FileSpreadsheet, ListOrdered, Paperclip, ShieldCheck, Sparkles } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChartLine, FileSpreadsheet, ListOrdered, Paperclip, ShieldCheck, Sparkles } from 'lucide-react'
 import type { Attachment, ChatMessage, Conversation, ConversationSummary, SapientStatus, Settings, TableInfo } from '@shared/types'
+import { Conversation as Thread, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
+import { Suggestion } from '@/components/ai-elements/suggestion'
 import { Composer, type ComposerHandle } from './components/Composer'
 import { DropOverlay, PreviewDialog, SettingsDialog } from './components/Dialogs'
 import type { DraftFile } from './components/FileCard'
@@ -46,13 +48,10 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [preview, setPreview] = useState<Attachment | null>(null)
   const [dragging, setDragging] = useState(false)
-  const [atBottom, setAtBottom] = useState(true)
 
   const convRef = useRef<Conversation | null>(null)
   convRef.current = conv
   const composer = useRef<ComposerHandle>(null)
-  const scroller = useRef<HTMLDivElement>(null)
-  const stick = useRef(true)
   const attachChain = useRef<Promise<unknown>>(Promise.resolve())
 
   // ------------------------------------------------------------ bootstrap + events
@@ -82,30 +81,10 @@ export default function App() {
     }
   }, [sidebarOpen])
 
-  // ------------------------------------------------------------ scrolling
-  const scrollToBottom = useCallback((smooth = false) => {
-    const el = scroller.current
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
-    stick.current = true
-  }, [])
-
-  useLayoutEffect(() => {
-    if (stick.current) scrollToBottom()
-  }, [conv?.messages, scrollToBottom])
-
-  const onScroll = () => {
-    const el = scroller.current
-    if (!el) return
-    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    stick.current = bottom
-    setAtBottom(bottom)
-  }
-
   // ------------------------------------------------------------ actions
   const newChat = useCallback(() => {
     setConv(null)
     setDraft([])
-    stick.current = true
     requestAnimationFrame(() => composer.current?.focus())
   }, [])
 
@@ -114,9 +93,7 @@ export default function App() {
     if (!c) return
     setConv(c)
     setDraft([])
-    stick.current = true
-    requestAnimationFrame(() => scrollToBottom())
-  }, [scrollToBottom])
+  }, [])
 
   const attachPaths = useCallback((paths: string[]) => {
     if (paths.length === 0) return
@@ -168,13 +145,11 @@ export default function App() {
     async (text: string) => {
       const ids = draft.filter((f) => f.status === 'ready').map((f) => f.id)
       if (!text && ids.length === 0) return
-      stick.current = true
       const c = await api.send(convRef.current?.id ?? null, text, ids)
       setConv(c)
       setDraft([])
-      requestAnimationFrame(() => scrollToBottom())
     },
-    [draft, scrollToBottom]
+    [draft]
   )
 
   const retry = useCallback(() => {
@@ -316,28 +291,28 @@ export default function App() {
             <div className="suggestions">
               {tables.length > 0 ? (
                 suggestionsFor(tables).map((s) => (
-                  <button key={s.label} className="suggestion" onClick={() => void send(s.prompt)} disabled={running}>
-                    <s.icon size={16} /> {s.label}
-                  </button>
+                  <Suggestion key={s.label} className="h-10 text-muted-foreground" suggestion={s.prompt} onClick={(p) => void send(p)} disabled={running}>
+                    <s.icon /> {s.label}
+                  </Suggestion>
                 ))
               ) : (
-                <button className="suggestion" onClick={() => void pickFiles()}>
-                  <Paperclip size={16} /> Attach a spreadsheet
-                </button>
+                <Suggestion className="h-10 text-muted-foreground" suggestion="" onClick={() => void pickFiles()}>
+                  <Paperclip /> Attach a spreadsheet
+                </Suggestion>
               )}
             </div>
             {tables.length === 0 && (
               <p className="empty-note">
-                <FileSpreadsheet size={14} style={{ verticalAlign: '-2px' }} /> Drop an Excel or CSV file anywhere. It never leaves this computer —
-                <br />
-                SAPIENT runs the model locally and DuckDB crunches the numbers.
+                <FileSpreadsheet size={14} className="inline align-[-2px]" /> Drop an Excel or CSV file anywhere. It never leaves this computer — SAPIENT runs the model locally and DuckDB
+                crunches the numbers.
               </p>
             )}
           </div>
         ) : (
           <>
-            <div className="scroller" ref={scroller} onScroll={onScroll}>
-              <div className="thread">
+            {/* Remounted per chat so each one opens at its latest message. */}
+            <Thread key={conv?.id} className="scroller" initial="instant">
+              <ConversationContent className="thread mx-auto w-full max-w-3xl gap-6 px-6 pt-2 pb-12 max-[860px]:px-4">
                 {messages.map((m, i) =>
                   m.role === 'user' ? (
                     <UserMessage key={m.id} message={m} onOpenFile={openAttachment} />
@@ -345,14 +320,10 @@ export default function App() {
                     <AssistantMessage key={m.id} message={m} isLast={i === messages.length - 1} onRetry={retry} onStartEngine={() => void startEngine()} />
                   )
                 )}
-              </div>
-            </div>
+              </ConversationContent>
+              <ConversationScrollButton aria-label="Scroll to bottom" />
+            </Thread>
             <div className="composer-wrap">
-              {!atBottom && (
-                <button className="scroll-down" onClick={() => scrollToBottom(true)} aria-label="Scroll to bottom">
-                  <ArrowDown size={18} />
-                </button>
-              )}
               {composerEl}
               <div className="disclaimer">ExelSnap runs fully offline. Local models can make mistakes — check the query results.</div>
             </div>
