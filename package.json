@@ -2,7 +2,7 @@
   "name": "exelsnap",
   "productName": "ExelSnap",
   "version": "0.1.0",
-  "description": "Chat with your spreadsheets, fully offline \u2014 powered by SAPIENT.",
+  "description": "Chat with your spreadsheets, fully offline — powered by SAPIENT.",
   "main": "./out/main/index.js",
   "author": "Shubhr Gunjan",
   "license": "UNLICENSED",
@@ -26,18 +26,21 @@
     "electron": "^44.5.1",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
-    "typescript": "5.9",
-    "vite": "^7.3.7"
-  },
-  "dependencies": {
-    "@duckdb/node-api": "^1.5.6-r.1",
     "lucide-react": "^1.52.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-markdown": "^10.1.0",
     "recharts": "^3.10.1",
     "remark-gfm": "^4.0.1",
-    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+    "typescript": "5.9",
+    "vite": "^7.3.7"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.63",
+    "@duckdb/node-api": "^1.5.6-r.1",
+    "ai": "^7.0.128",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "zod": "^4.6.5"
   },
   "allowScripts": {
     "esbuild@0.25.12": true,
@@ -60,21 +63,33 @@
     "mac": {
       "category": "public.app-category.productivity",
       "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        }
+        "dmg"
       ],
-      "darkModeSupport": true
+      "identity": "-",
+      "darkModeSupport": true,
+      "hardenedRuntime": false
     },
     "linux": {
       "target": [
         "AppImage"
       ],
       "category": "Office"
-    }
+    },
+    "fileAssociations": [
+      {
+        "ext": [
+          "xlsx",
+          "xlsm",
+          "xlsb",
+          "xls",
+          "ods",
+          "csv",
+          "tsv"
+        ],
+        "name": "Spreadsheet",
+        "role": "Viewer",
+        "rank": "Alternate"
+      }
+    ]
   }
 }

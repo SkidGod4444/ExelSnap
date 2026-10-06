@@ -38,7 +38,7 @@ export function Header(p: Props) {
           </button>
         </>
       )}
-      <div style={{ position: 'relative' }}>
+      <div className="model-wrap">
         <button className="model-btn" onClick={() => setOpen(!open)}>
           ExelSnap <span className="model-name">{active ? shortModel(active) : ''}</span>
           <ChevronDown size={16} />

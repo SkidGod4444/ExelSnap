@@ -1,12 +1,17 @@
 import { join } from 'node:path'
 import { writeFile } from 'node:fs/promises'
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, screen, session, shell, type MenuItemConstructorOptions } from 'electron'
 import type { InvokeApi } from '@shared/api'
 import type { AppEvent, QueryResult, SapientStatus } from '@shared/types'
 import { ChatService } from './chat'
 import { SapientManager } from './core/sapient'
 import { SUPPORTED_EXTENSIONS } from './core/workbook'
 import { Store } from './store'
+
+// Before anything reads userData, so dev and packaged runs share one profile folder.
+app.setName('ExelSnap')
+// Two instances would fight over the conversation files and the SAPIENT port.
+if (!app.requestSingleInstanceLock()) app.exit(0)
 
 const isDev = !app.isPackaged && !!process.env.ELECTRON_RENDERER_URL
 let win: BrowserWindow | null = null
@@ -22,6 +27,24 @@ const sapient = new SapientManager({
 function emit(e: AppEvent) {
   if (win && !win.isDestroyed()) win.webContents.send('event', e)
 }
+
+// Spreadsheets opened from Finder ("Open With", or dropped on the Dock icon). They can arrive before
+// the window exists, so they wait here until the renderer asks for them.
+let pendingFiles: string[] = []
+function openFiles(paths: string[]) {
+  pendingFiles.push(...paths)
+  if (!app.isReady()) return
+  if (!win || win.isDestroyed()) return createWindow()
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+  emit({ type: 'open-files' })
+}
+app.on('open-file', (e, path) => {
+  e.preventDefault()
+  openFiles([path])
+})
+app.on('second-instance', () => openFiles([]))
 const chat = new ChatService(store, sapient, emit)
 
 let lastStatus = ''
@@ -61,6 +84,11 @@ const handlers: InvokeApi = {
       filters: [{ name: 'Spreadsheets', extensions: SUPPORTED_EXTENSIONS.map((e) => e.slice(1)) }]
     })
     return r.canceled ? [] : r.filePaths
+  },
+  takeOpenedFiles: async () => {
+    const paths = pendingFiles
+    pendingFiles = []
+    return paths
   },
   removeAttachment: (id, attId) => chat.removeAttachment(id, attId),
   send: (id, text, ids) => chat.send(id, text, ids),
@@ -105,9 +133,11 @@ for (const [name, fn] of Object.entries(handlers)) {
 
 function createWindow() {
   const mac = process.platform === 'darwin'
+  // Don't open larger than the screen on small MacBook displays.
+  const area = screen.getPrimaryDisplay().workAreaSize
   win = new BrowserWindow({
-    width: 1280,
-    height: 840,
+    width: Math.min(1280, area.width),
+    height: Math.min(840, area.height),
     minWidth: 720,
     minHeight: 520,
     show: false,
@@ -137,9 +167,33 @@ function createWindow() {
   else void win.loadFile(join(__dirname, '../renderer/index.html'))
 }
 
-app.setName('ExelSnap')
+function buildMenu() {
+  const template: MenuItemConstructorOptions[] = [
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' } as const] : []),
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    {
+      label: 'View',
+      submenu: [
+        // Reload and DevTools are development tools; a reload mid-answer would drop the streamed reply.
+        ...(app.isPackaged ? [] : ([{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }] as const)),
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' }
+      ]
+    },
+    { role: 'windowMenu' }
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
 app.whenReady().then(async () => {
   nativeTheme.themeSource = store.settings.theme
+  buildMenu()
+  // The packaged app gets its icon from the bundle; in development show it in the Dock too.
+  if (!app.isPackaged && process.platform === 'darwin') app.dock?.setIcon(join(__dirname, '../../resources/icon.png'))
   if (!isDev) {
     session.defaultSession.webRequest.onHeadersReceived((details, cb) => {
       cb({

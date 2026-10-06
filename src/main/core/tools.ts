@@ -1,43 +1,29 @@
+import { tool, type ToolSet } from 'ai'
+import { z } from 'zod'
 import type { ChartSpec, ChartType, QueryResult, TableInfo } from '@shared/types'
-import type { ToolDef } from './provider'
 import type { WorkbookSession } from './workbook'
 
-export const TOOL_DEFS: ToolDef[] = [
-  {
-    type: 'function',
-    function: {
-      name: 'run_sql',
-      description:
-        'Run ONE read-only DuckDB SQL query over the spreadsheet tables and get the result rows. Use it for every number you report. The result is also shown to the user as a table.',
-      parameters: {
-        type: 'object',
-        properties: { sql: { type: 'string', description: 'A single DuckDB SELECT query.' } },
-        required: ['sql']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'make_chart',
-      description:
-        'Draw a chart for the user from a DuckDB SQL query. The query should return one label/date column (x) and one or more numeric columns (y).',
-      parameters: {
-        type: 'object',
-        properties: {
-          sql: { type: 'string', description: 'DuckDB SELECT query producing the chart data.' },
-          type: { type: 'string', enum: ['bar', 'line', 'area', 'pie', 'scatter'] },
-          x: { type: 'string', description: 'Result column for the x axis / pie labels.' },
-          y: { type: 'array', items: { type: 'string' }, description: 'Numeric result column(s) to plot.' },
-          title: { type: 'string' }
-        },
-        required: ['sql', 'type']
-      }
-    }
-  }
-]
+/** Tool definitions for the AI SDK. No `execute`: the agent loop runs them so it can guard against loops and bad arguments. */
+export const TOOLS = {
+  run_sql: tool({
+    description:
+      'Run ONE read-only DuckDB SQL query over the spreadsheet tables and get the result rows. Use it for every number you report. The result is also shown to the user as a table.',
+    inputSchema: z.object({ sql: z.string().describe('A single DuckDB SELECT query.') })
+  }),
+  make_chart: tool({
+    description:
+      'Draw a chart for the user from a DuckDB SQL query. The query should return one label/date column (x) and one or more numeric columns (y).',
+    inputSchema: z.object({
+      sql: z.string().describe('DuckDB SELECT query producing the chart data.'),
+      type: z.enum(['bar', 'line', 'area', 'pie', 'scatter']),
+      x: z.string().optional().describe('Result column for the x axis / pie labels.'),
+      y: z.array(z.string()).optional().describe('Numeric result column(s) to plot.'),
+      title: z.string().optional()
+    })
+  })
+} satisfies ToolSet
 
-export const TOOL_NAMES = TOOL_DEFS.map((t) => t.function.name)
+export const TOOL_NAMES = Object.keys(TOOLS)
 
 const MODEL_ROWS = 40 // rows of each result the model gets to read
 const UI_ROWS = 500 // rows the user gets to see
@@ -50,8 +36,10 @@ export interface ToolOutcome {
   error?: string
 }
 
-export function parseArgs(name: string, raw: string): Record<string, unknown> {
-  const s = raw.trim()
+/** Tool arguments as an object. Accepts what the SDK parsed, a JSON string, or (from small models) bare SQL. */
+export function parseArgs(name: string, input: unknown): Record<string, unknown> {
+  if (input && typeof input === 'object') return input as Record<string, unknown>
+  const s = String(input ?? '').trim()
   if (!s) return {}
   try {
     const v = JSON.parse(s)
@@ -147,7 +135,8 @@ export function schemaText(tables: TableInfo[]): string {
 }
 
 export function systemPrompt(tables: TableInfo[]): string {
-  const today = new Date().toISOString().slice(0, 10)
+  // Local calendar date (toISOString is UTC, which is yesterday for part of the day east of Greenwich).
+  const today = new Date().toLocaleDateString('en-CA')
   const data =
     tables.length > 0
       ? `The user's spreadsheets are loaded as DuckDB tables:\n\n${schemaText(tables)}`

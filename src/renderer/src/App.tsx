@@ -7,6 +7,7 @@ import type { DraftFile } from './components/FileCard'
 import { Header } from './components/Header'
 import { AssistantMessage, UserMessage } from './components/Message'
 import { Sidebar } from './components/Sidebar'
+import logo from './assets/logo.png'
 
 const api = window.api
 const SUPPORTED = /\.(xlsx|xlsm|xlsb|xls|ods|csv|tsv)$/i
@@ -149,6 +150,13 @@ export default function App() {
   }, [])
 
   const pickFiles = useCallback(async () => attachPaths(await api.pickFiles()), [attachPaths])
+
+  // Files opened from Finder ("Open With", or dropped on the Dock icon).
+  useEffect(() => {
+    const take = () => void api.takeOpenedFiles().then(attachPaths)
+    take()
+    return api.onEvent((e) => e.type === 'open-files' && take())
+  }, [attachPaths])
 
   const removeDraft = useCallback(async (id: string) => {
     setDraft((d) => d.filter((f) => f.id !== id))
@@ -302,6 +310,7 @@ export default function App() {
 
         {empty ? (
           <div className="empty">
+            <img className="empty-logo" src={logo} alt="" draggable={false} />
             <h1>{tables.length ? 'What should we look at?' : 'What should we analyze today?'}</h1>
             <div className="composer-wrap centered">{composerEl}</div>
             <div className="suggestions">
@@ -338,12 +347,12 @@ export default function App() {
                 )}
               </div>
             </div>
-            {!atBottom && (
-              <button className="scroll-down" onClick={() => scrollToBottom(true)} aria-label="Scroll to bottom">
-                <ArrowDown size={18} />
-              </button>
-            )}
             <div className="composer-wrap">
+              {!atBottom && (
+                <button className="scroll-down" onClick={() => scrollToBottom(true)} aria-label="Scroll to bottom">
+                  <ArrowDown size={18} />
+                </button>
+              )}
               {composerEl}
               <div className="disclaimer">ExelSnap runs fully offline. Local models can make mistakes — check the query results.</div>
             </div>

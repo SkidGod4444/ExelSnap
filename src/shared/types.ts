@@ -1,4 +1,5 @@
 // Types shared by the main process (agent, workbook engine) and the renderer (chat UI).
+import type { ModelMessage } from 'ai'
 
 export type ColumnType = 'BIGINT' | 'DOUBLE' | 'BOOLEAN' | 'DATE' | 'TIMESTAMP' | 'VARCHAR'
 
@@ -82,13 +83,6 @@ export interface ChatMessage {
   durationMs?: number
 }
 
-/** OpenAI chat-completions message, as sent to SAPIENT. */
-export interface LlmMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string | null
-  tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[]
-  tool_call_id?: string
-}
 
 export interface Conversation {
   id: string
@@ -97,7 +91,7 @@ export interface Conversation {
   updatedAt: number
   attachments: Attachment[]
   messages: ChatMessage[]
-  history: LlmMessage[] // model-facing transcript (without system prompt)
+  history: ModelMessage[] // model-facing transcript in AI SDK format (without system prompt)
 }
 
 export interface ConversationSummary {
@@ -137,3 +131,5 @@ export type AppEvent =
   | { type: 'conversations'; conversations: ConversationSummary[] }
   | { type: 'conversation'; conversation: Conversation }
   | { type: 'sapient'; status: SapientStatus }
+  /** Files were opened from Finder / the Dock; fetch them with takeOpenedFiles(). */
+  | { type: 'open-files' }

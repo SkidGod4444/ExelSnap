@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { SapientStatus } from '@shared/types'
-import { OpenAICompatibleProvider } from './provider'
+import { ModelClient } from './model'
 
 const exec = promisify(execFile)
 
@@ -82,6 +82,7 @@ function isLocal(baseUrl: string): boolean {
 export class SapientManager {
   private child: ChildProcess | null = null
   private starting = false
+  private startPromise: Promise<void> | null = null
   private lastError: string | undefined
   private downloadedCache: { at: number; models: string[] } | null = null
   private versionCache: string | undefined
@@ -103,7 +104,7 @@ export class SapientManager {
     let resident: string[] = []
     let online = false
     try {
-      resident = await new OpenAICompatibleProvider(baseUrl).listModels(AbortSignal.timeout(2_000))
+      resident = await new ModelClient(baseUrl).listModels(AbortSignal.timeout(2_000))
       online = true
     } catch {
       online = false
@@ -129,8 +130,13 @@ export class SapientManager {
     this.downloadedCache = null
   }
 
-  /** Spawn `sapient serve` on the configured port and wait until it answers. */
-  async start(): Promise<void> {
+  /** Spawn `sapient serve` on the configured port and wait until it answers. Concurrent callers share one startup. */
+  start(): Promise<void> {
+    this.startPromise ??= this.startNow().finally(() => (this.startPromise = null))
+    return this.startPromise
+  }
+
+  private async startNow(): Promise<void> {
     const baseUrl = this.opts.baseUrl()
     if (!isLocal(baseUrl)) throw new Error('SAPIENT can only be started automatically for a localhost URL.')
     const binary = findSapientBinary(this.opts.binaryOverride() || undefined)
@@ -151,15 +157,21 @@ export class SapientManager {
       }
       child.stdout?.on('data', onData)
       child.stderr?.on('data', onData)
+      // Without this a failed spawn (binary not executable, removed mid-run) is an uncaught exception.
+      child.on('error', (err) => {
+        log?.end()
+        if (this.child === child) this.child = null
+        this.lastError = `Could not run SAPIENT (${binary}): ${err.message}`
+      })
       child.on('exit', (code) => {
         log?.end()
         if (this.child === child) this.child = null
         if (code && code !== 0) this.lastError = `SAPIENT exited with code ${code}. ${lastLine(tail)}`.trim()
       })
-      const provider = new OpenAICompatibleProvider(baseUrl)
+      const provider = new ModelClient(baseUrl)
       const deadline = Date.now() + 60_000
       while (Date.now() < deadline) {
-        if (child.exitCode !== null) throw new Error(this.lastError ?? 'SAPIENT exited during startup.')
+        if (child.exitCode !== null || this.child !== child) throw new Error(this.lastError ?? 'SAPIENT exited during startup.')
         try {
           await provider.listModels(AbortSignal.timeout(1_000))
           return

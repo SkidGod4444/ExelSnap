@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import type { AppEvent, Attachment, ChatMessage, Conversation, LlmMessage, PreviewResult, ToolPart } from '@shared/types'
+import type { ModelMessage } from 'ai'
+import type { AppEvent, Attachment, ChatMessage, Conversation, PreviewResult, ToolPart } from '@shared/types'
 import { runAgent, type AgentEvent } from './core/agent'
-import { OpenAICompatibleProvider, ProviderError } from './core/provider'
+import { ModelClient, ProviderError } from './core/model'
 import type { SapientManager } from './core/sapient'
 import { WorkbookSession } from './core/workbook'
 import type { Store } from './store'
@@ -158,7 +159,7 @@ export class ChatService {
     const ctrl = new AbortController()
     this.runs.set(c.id, ctrl)
     const t0 = now()
-    const out: LlmMessage[] = []
+    const out: ModelMessage[] = []
     const update = (immediate = false) => {
       this.store.save(c.id)
       this.pushMessage(c.id, msg, immediate)
@@ -217,7 +218,7 @@ export class ChatService {
       const session = await this.session(c.id)
       const fileNote = files.length ? `\n\n(I attached ${files.map((f) => `${f.name}, loaded as table ${f.tables.map((t) => t.table).join(', ')}`).join('; ')}.)` : ''
       await runAgent({
-        provider: new OpenAICompatibleProvider(this.store.settings.baseUrl),
+        provider: new ModelClient(this.store.settings.baseUrl),
         model: status.activeModel,
         session,
         history: c.history,
@@ -238,9 +239,10 @@ export class ChatService {
     } finally {
       // Keep the model-facing transcript well-formed even after a stop/error.
       const last = out[out.length - 1]
-      if (last?.role === 'assistant' && last.tool_calls) {
+      if (last?.role === 'assistant' && typeof last.content !== 'string' && last.content.some((p) => p.type === 'tool-call')) {
         // Tool calls that never got results would make the next request invalid.
-        out[out.length - 1] = { role: 'assistant', content: last.content || '(Stopped.)' }
+        const said = last.content.map((p) => (p.type === 'text' ? p.text : '')).join('')
+        out[out.length - 1] = { role: 'assistant', content: said || '(Stopped.)' }
       } else if (last && last.role !== 'assistant') {
         out.push({ role: 'assistant', content: msg.status === 'stopped' ? '(Stopped by the user.)' : `(Failed: ${msg.error ?? 'unknown error'})` })
       }

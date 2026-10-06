@@ -2,9 +2,9 @@
 //   npm run build && node out/main/cli.js --file data.xlsx [--model openhorizon/qwen2.5-7b-q4] [--url http://localhost:11435/v1] "question"
 //   node out/main/cli.js --file data.xlsx --schema      (just print what the model would see)
 import { parseArgs } from 'node:util'
-import type { LlmMessage } from '@shared/types'
+import type { ModelMessage } from 'ai'
 import { runAgent } from './core/agent'
-import { OpenAICompatibleProvider } from './core/provider'
+import { ModelClient } from './core/model'
 import { DEFAULT_BASE_URL, FALLBACK_MODEL, openHorizonDefaultModel } from './core/sapient'
 import { systemPrompt } from './core/tools'
 import { WorkbookSession } from './core/workbook'
@@ -37,9 +37,9 @@ async function main() {
   const question = positionals.join(' ')
   if (!question) throw new Error('Pass a question.')
   const model = values.model ?? openHorizonDefaultModel() ?? FALLBACK_MODEL
-  const provider = new OpenAICompatibleProvider(values.url ?? DEFAULT_BASE_URL)
+  const provider = new ModelClient(values.url ?? DEFAULT_BASE_URL)
   console.error(`model: ${model}\n`)
-  const out: LlmMessage[] = []
+  const out: ModelMessage[] = []
   const t0 = Date.now()
   await runAgent({
     provider,

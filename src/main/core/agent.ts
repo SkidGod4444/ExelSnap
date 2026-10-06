@@ -1,6 +1,6 @@
-import type { LlmMessage } from '@shared/types'
-import { extractTextToolCalls, type ModelProvider, type ToolCall } from './provider'
-import { TOOL_DEFS, TOOL_NAMES, parseArgs, runTool, systemPrompt, type ToolOutcome } from './tools'
+import type { ModelMessage, ToolModelMessage } from 'ai'
+import { extractTextToolCalls, type ModelClient, type ToolCall } from './model'
+import { TOOLS, TOOL_NAMES, parseArgs, runTool, systemPrompt, type ToolOutcome } from './tools'
 import type { WorkbookSession } from './workbook'
 
 export type AgentEvent =
@@ -12,26 +12,34 @@ export type AgentEvent =
   | { type: 'tool-end'; id: string; outcome: ToolOutcome; durationMs: number }
 
 export interface AgentRun {
-  provider: ModelProvider
+  provider: ModelClient
   model: string
   session: WorkbookSession
-  history: LlmMessage[]
+  history: ModelMessage[]
   userText: string
   temperature?: number
   signal?: AbortSignal
   maxSteps?: number
   /** Receives the messages to append to history as they happen (kept even if the run fails midway). */
-  out: LlmMessage[]
+  out: ModelMessage[]
   onEvent: (e: AgentEvent) => void
 }
 
 const KEEP_FULL = 12 // most recent history messages kept verbatim; older tool output is shortened
 
-function compactHistory(history: LlmMessage[]): LlmMessage[] {
+function compactHistory(history: ModelMessage[]): ModelMessage[] {
   const cut = history.length - KEEP_FULL
-  return history.map((m, i) =>
-    i < cut && m.role === 'tool' && (m.content?.length ?? 0) > 600 ? { ...m, content: m.content!.slice(0, 600) + '\n…(truncated)' } : m
-  )
+  return history.map((m, i) => {
+    if (i >= cut || m.role !== 'tool') return m
+    return {
+      ...m,
+      content: m.content.map((p) =>
+        p.type === 'tool-result' && p.output.type === 'text' && p.output.value.length > 600
+          ? { ...p, output: { type: 'text' as const, value: p.output.value.slice(0, 600) + '\n…(truncated)' } }
+          : p
+      )
+    }
+  })
 }
 
 /** A lone ```sql block in a reply without tool calls: small models often "show" the query instead of calling the tool. */
@@ -41,7 +49,7 @@ function sqlBlockCall(content: string): { call: ToolCall; text: string } | null 
   const sql = blocks[0][1].trim()
   if (!/^(select|with|from)\b/i.test(sql)) return null
   return {
-    call: { id: `call_sql_${Date.now()}`, name: 'run_sql', arguments: JSON.stringify({ sql }) },
+    call: { id: `call_sql_${Date.now()}`, name: 'run_sql', input: { sql } },
     text: content.replace(blocks[0][0], '').trim()
   }
 }
@@ -65,11 +73,7 @@ export async function runAgent(run: AgentRun): Promise<void> {
   for (let step = 0; step <= maxSteps; step++) {
     if (signal?.aborted) break
     const lastStep = step === maxSteps || consecutiveErrors >= 3 || repeats >= 2
-    const messages: LlmMessage[] = [
-      { role: 'system', content: systemPrompt(session.tables) },
-      ...compactHistory(run.history),
-      ...added
-    ]
+    const messages: ModelMessage[] = [...compactHistory(run.history), ...added]
     if (nudge) {
       nudge = false
       messages.push({ role: 'user', content: 'Please answer my question. Call run_sql to get the numbers you need.' })
@@ -79,8 +83,8 @@ export async function runAgent(run: AgentRun): Promise<void> {
     }
 
     onEvent({ type: 'step-start' })
-    const res = await provider.complete(
-      { model, messages, tools: lastStep ? undefined : TOOL_DEFS, temperature: run.temperature },
+    const res = await provider.step(
+      { model, instructions: systemPrompt(session.tables), messages, tools: lastStep ? undefined : TOOLS, temperature: run.temperature },
       { signal, onText: (delta) => onEvent({ type: 'text', delta }) }
     )
 
@@ -108,6 +112,9 @@ export async function runAgent(run: AgentRun): Promise<void> {
         }
       }
     }
+    // Anything said alongside the first tool call was written before any result came back, so it
+    // cannot be grounded in the data (small models happily announce an answer, then go and look).
+    if (calls.length > 0 && toolsUsed === 0) text = ''
     text = text.trim()
     onEvent({ type: 'step-text', text })
 
@@ -124,23 +131,31 @@ export async function runAgent(run: AgentRun): Promise<void> {
       return
     }
 
+    const parsed = calls.map((c) => ({ ...c, args: parseArgs(c.name, c.input) }))
     added.push({
       role: 'assistant',
-      content: text || null,
-      tool_calls: calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.arguments } }))
+      content: [
+        ...(text ? [{ type: 'text' as const, text }] : []),
+        ...parsed.map((c) => ({ type: 'tool-call' as const, toolCallId: c.id, toolName: c.name, input: c.args }))
+      ]
     })
 
-    for (const call of calls) {
+    // Every tool call needs a result, or the next request is malformed.
+    const results: ToolModelMessage = { role: 'tool', content: [] }
+    added.push(results)
+    const reply = (call: ToolCall, value: string) =>
+      results.content.push({ type: 'tool-result', toolCallId: call.id, toolName: call.name, output: { type: 'text', value } })
+
+    for (const call of parsed) {
       if (signal?.aborted) {
-        // Every tool call needs a result message, or the next request is malformed.
-        added.push({ role: 'tool', tool_call_id: call.id, content: '(Skipped: stopped by the user.)' })
+        reply(call, '(Skipped: stopped by the user.)')
         continue
       }
-      const args = parseArgs(call.name, call.arguments)
+      const { args } = call
       const key = `${call.name}:${String(args.sql ?? '').replace(/\s+/g, ' ').trim().toLowerCase()}`
       if (seen.has(key)) {
         // Small models loop on the same query; tell them to move on instead of re-running it.
-        added.push({ role: 'tool', tool_call_id: call.id, content: 'You already ran exactly this query and have its result above. Do not repeat it — answer the user now.' })
+        reply(call, 'You already ran exactly this query and have its result above. Do not repeat it — answer the user now.')
         repeats++
         continue
       }
@@ -149,7 +164,7 @@ export async function runAgent(run: AgentRun): Promise<void> {
       const t0 = Date.now()
       const outcome = await runTool(session, call.name, args)
       onEvent({ type: 'tool-end', id: call.id, outcome, durationMs: Date.now() - t0 })
-      added.push({ role: 'tool', tool_call_id: call.id, content: outcome.forModel })
+      reply(call, outcome.forModel)
       toolsUsed++
       consecutiveErrors = outcome.error ? consecutiveErrors + 1 : 0
     }

@@ -50,11 +50,19 @@ screenshots of each state to `snaps/`.
 
 ### Build the Mac app
 
-Build on the Mac itself — DuckDB's native binding is installed per platform:
+Build on the Mac itself — DuckDB's native binding is installed per platform **and per CPU**, so the DMG
+is built for the Mac you run this on (Apple Silicon → arm64, Intel → x64):
 
 ```bash
-npm ci && npm run dist:mac      # → dist/ExelSnap-*.dmg (unsigned)
+npm ci && npm run dist:mac      # → dist/ExelSnap-*.dmg
 ```
+
+The app is ad-hoc signed (no Apple Developer ID, not notarized). It runs as-is on the Mac that built it.
+On another Mac, Gatekeeper blocks the downloaded copy; clear the quarantine flag once with
+`xattr -cr /Applications/ExelSnap.app`. For real distribution, set a Developer ID in `build.mac.identity`,
+turn `hardenedRuntime` back on with a `disable-library-validation` entitlement (DuckDB's `.node` file), and notarize.
+
+Spreadsheets can be opened with ExelSnap from Finder ("Open With") or by dropping them on the Dock icon.
 
 ## Layout
 

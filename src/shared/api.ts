@@ -17,6 +17,8 @@ export interface InvokeApi {
   renameConversation(id: string, title: string): Promise<void>
   attachFiles(conversationId: string | null, paths: string[]): Promise<{ conversation: Conversation; added: Attachment[] }>
   pickFiles(): Promise<string[]>
+  /** Files opened from Finder / the Dock since the last call. */
+  takeOpenedFiles(): Promise<string[]>
   removeAttachment(conversationId: string, attachmentId: string): Promise<Conversation>
   send(conversationId: string | null, text: string, attachmentIds: string[]): Promise<Conversation>
   stop(conversationId: string): Promise<void>
@@ -44,6 +46,7 @@ export const INVOKE_METHODS: (keyof InvokeApi)[] = [
   'renameConversation',
   'attachFiles',
   'pickFiles',
+  'takeOpenedFiles',
   'removeAttachment',
   'send',
   'stop',
